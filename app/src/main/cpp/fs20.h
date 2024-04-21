@@ -9,6 +9,7 @@
 #include <android/native_window_jni.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
+#include <Vertex.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -17,6 +18,10 @@
 #include <set>
 #include <string>
 #include <optional>
+#include <fstream>
+#include <stdexcept>
+
+
 
 class VulkanManager {
 public:
@@ -56,6 +61,12 @@ public:
     VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, VkExtent2D actualExtent);
     void createSwapChain();
     VkExtent2D getWindowExtent();
+    void createGraphicsPipeline();
+    void createComputePipeline();
+    std::vector<char> readFile(const std::string& filename);
+    VkShaderModule createShaderModule(const std::vector<char>& code);
+
+
 
 private:
     ANativeWindow* mWindow;
@@ -69,6 +80,9 @@ private:
     VkExtent2D mSwapChainExtent;
     std::vector<VkImage> mSwapChainImages;
     VkFormat mSwapChainImageFormat;
+    VkRenderPass mRenderPass;
+    VkPipeline mGraphicsPipeline;
+    VkPipeline mComputePipeline;
     // Other Vulkan objects like device, surface, swapchain, etc.
 };
 

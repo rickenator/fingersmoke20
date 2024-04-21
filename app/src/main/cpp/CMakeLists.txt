@@ -40,6 +40,8 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -frtti -fexceptions")
 set(CMAKE_BUILD_TYPE "Debug")
 set(ANDROID_ABI "x86;x86_64;armeabi-v7a;arm64-v8a")
 
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 target_link_libraries(
         ${CMAKE_PROJECT_NAME}
         Vulkan::Vulkan
