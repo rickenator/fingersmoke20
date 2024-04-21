@@ -7,6 +7,7 @@
 
 #include <jni.h>
 #include <android/native_window_jni.h>
+#include <android/log.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
 #include <Vertex.h>
@@ -21,7 +22,7 @@
 #include <fstream>
 #include <stdexcept>
 
-
+#define MAX_FRAMES_IN_FLIGHT 2
 
 class VulkanManager {
 public:
@@ -65,7 +66,14 @@ public:
     void createComputePipeline();
     std::vector<char> readFile(const std::string& filename);
     VkShaderModule createShaderModule(const std::vector<char>& code);
-
+    void createSharedTexture();
+    uint32_t findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
+    void initVulkanFences();
+    void initSynchronization();
+    void initSemaphores();
+    void initImagesInFlight();
+    void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void createFramebuffers();
 
 
 private:
@@ -76,14 +84,24 @@ private:
     VkPhysicalDevice mPhysicalDevice;
     VkDevice mDevice;
     VkQueue mGraphicsQueue;
+    VkQueue mPresentQueue;
     VkSwapchainKHR mSwapChain;
     VkExtent2D mSwapChainExtent;
     std::vector<VkImage> mSwapChainImages;
+    std::vector<VkImageView> mSwapChainImageViews;
     VkFormat mSwapChainImageFormat;
+    uint32_t mSwapChainImageCount;
     VkRenderPass mRenderPass;
     VkPipeline mGraphicsPipeline;
     VkPipeline mComputePipeline;
-    // Other Vulkan objects like device, surface, swapchain, etc.
-};
+    VkImage mTextureImage; // to share between compute and fragment
+    std::vector<VkFence> mInFlightFences;
+    std::vector<VkFence> mImagesInFlight;
+    std::vector<VkSemaphore> mImageAvailableSemaphores;
+    std::vector<VkSemaphore> mRenderFinishedSemaphores;
+    std::vector<VkCommandBuffer> mCommandBuffers;
+    std::vector<VkFramebuffer> mFramebuffers;
+
+ };
 
 #endif //FINGERSMOKE2_0_FS20_H

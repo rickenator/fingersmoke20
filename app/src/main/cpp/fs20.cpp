@@ -111,6 +111,7 @@ int VulkanManager::initVulkan() {
 
     mPhysicalDevice = selectedDevice;
 
+    // create mDevice
     createLogicalDevice(requiredExtensions);
 
     // Create the Android Surface
@@ -130,8 +131,14 @@ int VulkanManager::initVulkan() {
         throw std::runtime_error("failed to create Swap Chain!");
     }
 
-
-    // Continue with additional Vulkan setup...
+    createGraphicsPipeline();
+    createComputePipeline();
+    createSharedTexture();
+    initVulkanFences();
+    initSynchronization();
+    initSemaphores();
+    initImagesInFlight();
+    createFramebuffers();
 
     return 0;
 }
@@ -171,34 +178,44 @@ VkPhysicalDevice VulkanManager::pickSuitableDevice(const std::vector<VkPhysicalD
     throw std::runtime_error("failed to find a suitable GPU!");
 }
 
-
+// create the mDevice
 void VulkanManager::createLogicalDevice(const std::vector<const char*>& requiredExtensions) {
     QueueFamilyIndices indices = findQueueFamilies(mPhysicalDevice, mSurface);
 
+    std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+    std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+
     float queuePriority = 1.0f;
-    VkDeviceQueueCreateInfo queueCreateInfo = {};
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
-    queueCreateInfo.queueCount = 1;
-    queueCreateInfo.pQueuePriorities = &queuePriority;
+    for (uint32_t queueFamily : uniqueQueueFamilies) {
+        VkDeviceQueueCreateInfo queueCreateInfo = {};
+        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo.queueFamilyIndex = queueFamily;
+        queueCreateInfo.queueCount = 1;
+        queueCreateInfo.pQueuePriorities = &queuePriority;
+        queueCreateInfos.push_back(queueCreateInfo);
+    }
 
     VkPhysicalDeviceFeatures deviceFeatures = {};
 
     VkDeviceCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createInfo.pQueueCreateInfos = &queueCreateInfo;
-    createInfo.queueCreateInfoCount = 1;
+    createInfo.pQueueCreateInfos = queueCreateInfos.data();
+    createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
     createInfo.pEnabledFeatures = &deviceFeatures;
     createInfo.enabledExtensionCount = static_cast<uint32_t>(requiredExtensions.size());
     createInfo.ppEnabledExtensionNames = requiredExtensions.data();
 
-    VkDevice localDevice;  // Temporary VkDevice handle
-    if (vkCreateDevice(mPhysicalDevice, &createInfo, nullptr, &localDevice) != VK_SUCCESS) {
+    if (vkCreateDevice(mPhysicalDevice, &createInfo, nullptr, &mDevice) != VK_SUCCESS) {
         throw std::runtime_error("failed to create logical device!");
     }
 
-    mDevice = localDevice;  // Assign the created device handle to the member variable
+    // Retrieve queues from the device
     vkGetDeviceQueue(mDevice, indices.graphicsFamily.value(), 0, &mGraphicsQueue);
+    if (indices.presentFamily.value() == indices.graphicsFamily.value()) {
+        mPresentQueue = mGraphicsQueue;  // Same queue for graphics and presentation
+    } else {
+        vkGetDeviceQueue(mDevice, indices.presentFamily.value(), 0, &mPresentQueue);
+    }
 }
 
 bool VulkanManager::checkSwapchainSupport(VkPhysicalDevice device) {
@@ -317,10 +334,33 @@ void VulkanManager::createSwapChain() {
     // Retrieve the swap chain images
     vkGetSwapchainImagesKHR(mDevice, mSwapChain, &imageCount, nullptr);
     mSwapChainImages.resize(imageCount);
-    vkGetSwapchainImagesKHR(mDevice, mSwapChain, &imageCount, mSwapChainImages.data());
+    vkGetSwapchainImagesKHR(mDevice, mSwapChain, &mSwapChainImageCount, mSwapChainImages.data());
 
     mSwapChainImageFormat = surfaceFormat.format;
     mSwapChainExtent = extent;
+
+    mSwapChainImageViews.resize(imageCount);
+
+    for (size_t i = 0; i < mSwapChainImages.size(); i++) {
+        VkImageViewCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        createInfo.image = mSwapChainImages[i];
+        createInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        createInfo.format = mSwapChainImageFormat;  // Format used in swapchain creation
+        createInfo.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+        createInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        createInfo.subresourceRange.baseMipLevel = 0;
+        createInfo.subresourceRange.levelCount = 1;
+        createInfo.subresourceRange.baseArrayLayer = 0;
+        createInfo.subresourceRange.layerCount = 1;
+
+        if (vkCreateImageView(mDevice, &createInfo, nullptr, &mSwapChainImageViews[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create image views!");
+        }
+    }
 }
 
 
@@ -587,9 +627,233 @@ std::vector<char> VulkanManager::readFile(const std::string& filename) {
     return buffer;
 }
 
+void VulkanManager::createSharedTexture() {
+    VkExtent2D extent = getWindowExtent();
+    VkImageCreateInfo imageInfo = {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = extent.width;  // Width of your simulation grid
+    imageInfo.extent.height = extent.height; // Height of your simulation grid
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R32_SFLOAT;  // Single float to store density
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT; // Storage for compute, sampled for fragment
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+
+    if (vkCreateImage(mDevice, &imageInfo, nullptr, &mTextureImage) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create image!");
+    }
+
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements(mDevice, mTextureImage, &memRequirements);
+
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memRequirements.size;
+    allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+
+    VkDeviceMemory textureImageMemory;
+    if (vkAllocateMemory(mDevice, &allocInfo, nullptr, &textureImageMemory) != VK_SUCCESS) {
+        throw std::runtime_error("failed to allocate image memory!");
+    }
+    vkBindImageMemory(mDevice, mTextureImage, textureImageMemory, 0);
+}
+
+uint32_t VulkanManager::findMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties) {
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &memProperties);
+
+    for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++) {
+        if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties) {
+            return i;
+        }
+    }
+
+    throw std::runtime_error("failed to find suitable memory type!");
+}
+
+void VulkanManager::initSynchronization() {
+    mInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+    mImageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    mRenderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+
+    VkSemaphoreCreateInfo semaphoreInfo = {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;  // Start all fences as signaled
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateSemaphore(mDevice, &semaphoreInfo, nullptr, &mImageAvailableSemaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(mDevice, &semaphoreInfo, nullptr, &mRenderFinishedSemaphores[i]) != VK_SUCCESS ||
+            vkCreateFence(mDevice, &fenceInfo, nullptr, &mInFlightFences[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create synchronization objects for a frame");
+        }
+    }
+
+}
+
+void VulkanManager::initVulkanFences() {
+    mInFlightFences.resize(MAX_FRAMES_IN_FLIGHT);
+    VkFenceCreateInfo fenceInfo{};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;  // Start with fences signaled
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateFence(mDevice, &fenceInfo, nullptr, &mInFlightFences[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create synchronization fences for frame " + std::to_string(i));
+        }
+    }
+}
+
+void VulkanManager::initSemaphores() {
+    mImageAvailableSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+    mRenderFinishedSemaphores.resize(MAX_FRAMES_IN_FLIGHT);
+
+    VkSemaphoreCreateInfo semaphoreInfo{};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+    for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
+        if (vkCreateSemaphore(mDevice, &semaphoreInfo, nullptr, &mImageAvailableSemaphores[i]) != VK_SUCCESS ||
+            vkCreateSemaphore(mDevice, &semaphoreInfo, nullptr, &mRenderFinishedSemaphores[i]) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create semaphores for frame " + std::to_string(i));
+        }
+    }
+}
+
+void VulkanManager::initImagesInFlight() {
+    mImagesInFlight.resize(mSwapChainImageCount, VK_NULL_HANDLE);  // Initialize with VK_NULL_HANDLE indicating no fence is associated initially.
+
+    // mSwapChainImages and mInFlightFences are already initialized
+    for (size_t i = 0; i < mSwapChainImageCount; ++i) {
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;  // Start with fences signaled
+
+        VkFence fence;
+        if (vkCreateFence(mDevice, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
+            throw std::runtime_error("Failed to create fence for image in flight");
+        }
+
+        mImagesInFlight[i] = fence;  // Store the fence
+    }
+}
+
+void VulkanManager::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+    // Command buffer begin info
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+
+    // Start the render pass
+    VkRenderPassBeginInfo renderPassInfo{};
+    renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    renderPassInfo.renderPass = mRenderPass;
+    renderPassInfo.framebuffer = mFramebuffers[imageIndex];
+    renderPassInfo.renderArea.offset = {0, 0};
+    renderPassInfo.renderArea.extent = mSwapChainExtent;
+
+    VkClearValue clearColor = {{0.0f, 0.0f, 0.0f, 1.0f}};
+    renderPassInfo.clearValueCount = 1;
+    renderPassInfo.pClearValues = &clearColor;
+
+    vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+
+    // Bind the graphics pipeline
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, mGraphicsPipeline);
+
+    // Draw
+    vkCmdDraw(commandBuffer, 3, 1, 0, 0);  // Drawing a triangle without a vertex buffer
+
+    vkCmdEndRenderPass(commandBuffer);
+
+    if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        throw std::runtime_error("Failed to record command buffer!");
+    }
+}
+
+void VulkanManager::createFramebuffers() {
+    mFramebuffers.resize(mSwapChainImageViews.size());
+
+    for (size_t i = 0; i < mSwapChainImageViews.size(); i++) {
+        VkImageView attachments[] = {
+                mSwapChainImageViews[i]  // Assuming a single attachment per framebuffer
+        };
+
+        VkFramebufferCreateInfo framebufferInfo{};
+        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        framebufferInfo.renderPass = mRenderPass;  // Already created render pass
+        framebufferInfo.attachmentCount = 1;
+        framebufferInfo.pAttachments = attachments;
+        framebufferInfo.width = mSwapChainExtent.width;
+        framebufferInfo.height = mSwapChainExtent.height;
+        framebufferInfo.layers = 1;
+
+        if (vkCreateFramebuffer(mDevice, &framebufferInfo, nullptr, &mFramebuffers[i]) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create a framebuffer!");
+        }
+    }
+}
+
 // Let's let JNI call this so the app can pause and resume, lifecycle etc.
 void VulkanManager::drawFrame() {
+    static int currentFrame = 0;
+    // Wait for the previous frame to finish
+    vkWaitForFences(mDevice, 1, &mInFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
+    uint32_t imageIndex;
+    vkAcquireNextImageKHR(mDevice, mSwapChain, UINT64_MAX, mImageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+
+    // Check if a previous frame is using this image (i.e., there is its fence to wait on)
+    if (mImagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+        vkWaitForFences(mDevice, 1, &mImagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
+    }
+    // Mark the image as now being in use by this frame
+    mImagesInFlight[imageIndex] = mInFlightFences[currentFrame];
+
+    vkResetFences(mDevice, 1, &mInFlightFences[currentFrame]);
+
+    vkResetCommandBuffer(mCommandBuffers[currentFrame], 0);
+    recordCommandBuffer(mCommandBuffers[currentFrame], imageIndex);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+    VkSemaphore waitSemaphores[] = {mImageAvailableSemaphores[currentFrame]};
+    VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+    submitInfo.waitSemaphoreCount = 1;
+    submitInfo.pWaitSemaphores = waitSemaphores;
+    submitInfo.pWaitDstStageMask = waitStages;
+
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &mCommandBuffers[currentFrame];
+
+    VkSemaphore signalSemaphores[] = {mRenderFinishedSemaphores[currentFrame]};
+    submitInfo.signalSemaphoreCount = 1;
+    submitInfo.pSignalSemaphores = signalSemaphores;
+
+    vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, mInFlightFences[currentFrame]);
+
+    VkPresentInfoKHR presentInfo{};
+    presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+    presentInfo.waitSemaphoreCount = 1;
+    presentInfo.pWaitSemaphores = signalSemaphores;
+
+    VkSwapchainKHR swapChains[] = {mSwapChain};
+    presentInfo.swapchainCount = 1;
+    presentInfo.pSwapchains = swapChains;
+    presentInfo.pImageIndices = &imageIndex;
+
+    vkQueuePresentKHR(mPresentQueue, &presentInfo);
+
+    currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void VulkanManager::cleanup() {
@@ -599,25 +863,64 @@ void VulkanManager::cleanup() {
     }
     // Clean up other Vulkan resources like device, swapchain, etc.
     ANativeWindow_release(mWindow);
+
+    for (auto framebuffer : mFramebuffers) {
+        vkDestroyFramebuffer(mDevice, framebuffer, nullptr);
+    }
+    mFramebuffers.clear();
+
+    for (auto fence : mImagesInFlight) {
+        vkDestroyFence(mDevice, fence, nullptr);
+    }
+
+    for (auto imageView : mSwapChainImageViews) {
+        vkDestroyImageView(mDevice, imageView, nullptr);
+    }
+    mSwapChainImageViews.clear();
+
+#ifdef USES_DEPTH_IMAGE_VIEW
+    // If using depth resources, destroy them
+    if (mDepthImageView) {
+        vkDestroyImageView(mDevice, mDepthImageView, nullptr);
+        vkDestroyImage(mDevice, mDepthImage, nullptr);
+        vkFreeMemory(mDevice, mDepthImageMemory, nullptr);
+    }
+#endif
+
+    // Finally, destroy the swapchain
+    vkDestroySwapchainKHR(mDevice, mSwapChain, nullptr);
+    mSwapChain = VK_NULL_HANDLE;
+
 }
 
+static JavaVM* jvm;
+JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
+    jvm = vm;
+    return VK_SUCCESS;
+}
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_myapp_MyActivity_initVulkan(JNIEnv* env, jobject,jobject surface) {
+Java_com_example_myapp_MyActivity_initVulkan(JNIEnv* env, jobject, jobject surface) {
     if (vkManager == nullptr) {
         ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
-        vkManager = new VulkanManager(window);
-        vkManager->initVulkan();
+        vkManager = new VulkanManager(window); // will call initVulcan()
+    }
+}
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_myapp_MyActivity_drawFrame(JNIEnv*, jobject) {
+    if (vkManager != nullptr) {
+        vkManager->drawFrame();
     }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_myapp_MyActivity_cleanupVulkan(JNIEnv*, jobject) {
     if (vkManager != nullptr) {
-        vkManager->cleanup();
+        //vkManager->cleanup(); // done in destructor
 
         delete vkManager;
         vkManager = nullptr;  // Reset the pointer after deletion to avoid dangling pointer issues
     }
 }
+
