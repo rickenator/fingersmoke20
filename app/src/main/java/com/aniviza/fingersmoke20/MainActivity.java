@@ -200,6 +200,11 @@ public class MainActivity extends AppCompatActivity {
         return pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION);
     }
 
-    private native void initVulkanSurface(Surface surface);
+    private native void initVulkan(Surface surface);
+    private native void cleanupVulkan();
+    private native void drawFrame();
+    private native void touchEvent(float x, float y);
+    private native void untouchEvent();
+
 
 }

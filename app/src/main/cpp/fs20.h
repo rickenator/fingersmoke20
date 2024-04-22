@@ -21,6 +21,7 @@
 #include <optional>
 #include <fstream>
 #include <stdexcept>
+#include <array>
 
 #define MAX_FRAMES_IN_FLIGHT 2
 
@@ -42,9 +43,12 @@ public:
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphicsFamily;
         std::optional<uint32_t> presentFamily;
+        std::optional<uint32_t> computeFamily;  // Dedicated compute family
 
         bool isComplete() const {
-            return graphicsFamily.has_value() && presentFamily.has_value();
+            // For basic functionality, ensure graphics and present families are available.
+            // Compute family is optional unless specifically required for separate compute operations.
+            return graphicsFamily.has_value() && presentFamily.has_value() && (computeFamily.has_value() || computeFamily == graphicsFamily);
         }
     };
 
@@ -64,6 +68,7 @@ public:
     VkExtent2D getWindowExtent();
     void createGraphicsPipeline();
     void createComputePipeline();
+    void setupComputeDescriptorSet();
     std::vector<char> readFile(const std::string& filename);
     VkShaderModule createShaderModule(const std::vector<char>& code);
     void createSharedTexture();
@@ -73,7 +78,15 @@ public:
     void initSemaphores();
     void initImagesInFlight();
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void createCommandBufferForCompute();
     void createFramebuffers();
+    void pushTouch(float x, float y);
+    void createPipelineLayout();
+    void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
+                                     VkMemoryPropertyFlags properties,
+                                     VkBuffer& buffer,
+                                     VkDeviceMemory& bufferMemory);
+    void createShaderBuffers();
 
 
 private:
@@ -83,24 +96,51 @@ private:
     VkDebugUtilsMessengerEXT mDebugMessenger;
     VkPhysicalDevice mPhysicalDevice;
     VkDevice mDevice;
+
     VkQueue mGraphicsQueue;
     VkQueue mPresentQueue;
+    VkQueue mCommandQueue;
+
     VkSwapchainKHR mSwapChain;
     VkExtent2D mSwapChainExtent;
     std::vector<VkImage> mSwapChainImages;
     std::vector<VkImageView> mSwapChainImageViews;
     VkFormat mSwapChainImageFormat;
     uint32_t mSwapChainImageCount;
+
     VkRenderPass mRenderPass;
     VkPipeline mGraphicsPipeline;
+
     VkPipeline mComputePipeline;
+    VkPipelineLayout mComputePipelineLayout;
+
     VkImage mTextureImage; // to share between compute and fragment
+
     std::vector<VkFence> mInFlightFences;
     std::vector<VkFence> mImagesInFlight;
     std::vector<VkSemaphore> mImageAvailableSemaphores;
     std::vector<VkSemaphore> mRenderFinishedSemaphores;
+
     std::vector<VkCommandBuffer> mCommandBuffers;
+    VkCommandBuffer mComputeCommandBuffer;
+    VkCommandPool mComputeCommandPool;
+
+    VkDescriptorSetLayout mDescriptorSetLayout;
+    VkDescriptorPool mDescriptorPool;
+    VkDescriptorSet mDescriptorSet;
     std::vector<VkFramebuffer> mFramebuffers;
+
+    VkBuffer mVelocityBuffer;
+    VkDeviceMemory mVelocityBufferMemory;
+
+    VkBuffer mPressureBuffer;
+    VkDeviceMemory mPressureBufferMemory;
+
+    VkBuffer mVelocityOutputBuffer;
+    VkDeviceMemory mVelocityOutputBufferMemory;
+
+    VkBuffer mPressureOutputBuffer;
+    VkDeviceMemory mPressureOutputBufferMemory;
 
  };
 

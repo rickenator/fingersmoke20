@@ -19,6 +19,8 @@ layout (push_constant) uniform Params {
     float visc;
     int width;
     int height;
+    vec2 touchPos;  // Added touch position in normalized coordinates [0,1]
+    bool isTouching;  // Whether there is an active touch
 } params;
 
 // Helper function to compute index from 2D coordinates
@@ -36,27 +38,30 @@ void main() {
 
     // Handle boundaries
     if (x == 0 || y == 0 || x == params.width - 1 || y == params.height - 1) {
-        outVelocities[index] = vec2(0.0); // Stick condition or customized as needed
+        outVelocities[index] = vec2(0.0);
         outPressures[index] = 0.0;
         return;
     }
 
-    // Viscosity application (diffusion of velocity)
+    // Heat application based on touch
+    float distanceToTouch = distance(vec2(x, y) / vec2(params.width, params.height), params.touchPos);
+    float touchEffect = params.isTouching ? exp(-distanceToTouch * 10.0) : 0.0;
+
+    // Viscosity and heat application
     vec2 laplacianV = vec2(
-        velocities[getIndex(x - 1, y)] + velocities[getIndex(x + 1, y)] +
-        velocities[getIndex(x, y - 1)] + velocities[getIndex(x, y + 1)] - 4.0 * velocities[index]
+    velocities[getIndex(x - 1, y)] + velocities[getIndex(x + 1, y)] +
+    velocities[getIndex(x, y - 1)] + velocities[getIndex(x, y + 1)] - 4.0 * velocities[index]
     );
-    outVelocities[index] = velocities[index] + params.visc * params.deltaTime * laplacianV;
+    outVelocities[index] = velocities[index] + params.visc * params.deltaTime * laplacianV + vec2(touchEffect);  // Applying heat effect as a force
 
     // Pressure projection to maintain incompressibility
     float divergence = (
-        velocities[getIndex(x + 1, y)].x - velocities[getIndex(x - 1, y)].x +
-        velocities[getIndex(x, y + 1)].y - velocities[getIndex(x, y - 1)].y
+    velocities[getIndex(x + 1, y)].x - velocities[getIndex(x - 1, y)].x +
+    velocities[getIndex(x, y + 1)].y - velocities[getIndex(x, y - 1)].y
     ) / 2.0;
     float pressure = (
-        pressures[getIndex(x - 1, y)] + pressures[getIndex(x + 1, y)] +
-        pressures[getIndex(x, y - 1)] + pressures[getIndex(x, y + 1)] - divergence
+    pressures[getIndex(x - 1, y)] + pressures[getIndex(x + 1, y)] +
+    pressures[getIndex(x, y - 1)] + pressures[getIndex(x, y + 1)] - divergence
     ) / 4.0;
     outPressures[index] = pressure;
 }
-
