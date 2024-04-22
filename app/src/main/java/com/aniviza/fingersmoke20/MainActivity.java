@@ -1,210 +1,155 @@
 package com.aniviza.fingersmoke20;
 
-import android.annotation.SuppressLint;
-
-import androidx.appcompat.app.ActionBar;
-import androidx.appcompat.app.AppCompatActivity;
-
-import android.content.Context;
-import android.content.pm.PackageManager;
-import android.os.Build;
+import android.app.Activity;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.MotionEvent;
 import android.view.Surface;
+import android.view.SurfaceHolder;
+import android.view.SurfaceView;
 import android.view.View;
-import android.view.WindowInsets;
+import android.view.WindowManager;
 
-import com.aniviza.fingersmoke20.databinding.ActivityFullscreenBinding;
-
-/**
- * An example full-screen activity that shows and hides the system UI (i.e.
- * status bar and navigation/system bar) with user interaction.
- */
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends Activity {
 
     static {
-       System.loadLibrary("fingersmoke20");
+        System.loadLibrary("fingersmoke20");
     }
 
-    /**
-     * Whether or not the system UI should be auto-hidden after
-     * {@link #AUTO_HIDE_DELAY_MILLIS} milliseconds.
-     */
-    private static final boolean AUTO_HIDE = true;
+    private long lastFrameTime = System.nanoTime();
+    private Thread renderThread;
+    private volatile boolean running = false;
+    private volatile float lastTouchX = 0;
+    private volatile float lastTouchY = 0;
+    private volatile boolean isTouching = false;
 
-    /**
-     * If {@link #AUTO_HIDE} is set, the number of milliseconds to wait after
-     * user interaction before hiding the system UI.
-     */
-    private static final int AUTO_HIDE_DELAY_MILLIS = 3000;
-
-    /**
-     * Some older devices needs a small delay between UI widget updates
-     * and a change of the status and navigation bar.
-     */
-    private static final int UI_ANIMATION_DELAY = 300;
-    private final Handler mHideHandler = new Handler(Looper.myLooper());
-    private View mContentView;
-    private final Runnable mHidePart2Runnable = new Runnable() {
-        @SuppressLint("InlinedApi")
-        @Override
-        public void run() {
-            // Delayed removal of status and navigation bar
-            if (Build.VERSION.SDK_INT >= 30) {
-                mContentView.getWindowInsetsController().hide(
-                        WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
-            } else {
-                // Note that some of these constants are new as of API 16 (Jelly Bean)
-                // and API 19 (KitKat). It is safe to use them, as they are inlined
-                // at compile-time and do nothing on earlier devices.
-                mContentView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LOW_PROFILE
-                        | View.SYSTEM_UI_FLAG_FULLSCREEN
-                        | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                        | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                        | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION);
-            }
-        }
-    };
-    private View mControlsView;
-    private final Runnable mShowPart2Runnable = new Runnable() {
-        @Override
-        public void run() {
-            // Delayed display of UI elements
-            ActionBar actionBar = getSupportActionBar();
-            if (actionBar != null) {
-                actionBar.show();
-            }
-            mControlsView.setVisibility(View.VISIBLE);
-        }
-    };
-    private boolean mVisible;
-    private final Runnable mHideRunnable = new Runnable() {
-        @Override
-        public void run() {
-            hide();
-        }
-    };
-    /**
-     * Touch listener to use for in-layout UI controls to delay hiding the
-     * system UI. This is to prevent the jarring behavior of controls going away
-     * while interacting with activity UI.
-     */
-    private final View.OnTouchListener mDelayHideTouchListener = new View.OnTouchListener() {
-        @Override
-        public boolean onTouch(View view, MotionEvent motionEvent) {
-            switch (motionEvent.getAction()) {
-                case MotionEvent.ACTION_DOWN:
-                    if (AUTO_HIDE) {
-                        delayedHide(AUTO_HIDE_DELAY_MILLIS);
-                    }
-                    break;
-                case MotionEvent.ACTION_UP:
-                    view.performClick();
-                    break;
-                default:
-                    break;
-            }
-            return false;
-        }
-    };
-    private ActivityFullscreenBinding binding;
+    private void updateTouch(float x, float y, boolean touching) {
+        this.lastTouchX = x;
+        this.lastTouchY = y;
+        this.isTouching = touching;
+    }
+    private float deltaTime() {
+        long currentTime = System.nanoTime();
+        float deltaTime = (currentTime - lastFrameTime) / 1_000_000_000.0f;
+        lastFrameTime = currentTime;
+        return deltaTime;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // Set the layout based on your application requirements
+        setContentView(R.layout.activity_main);
 
-        binding = ActivityFullscreenBinding.inflate(getLayoutInflater());
-        setContentView(binding.getRoot());
+        // Make the activity full screen
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+        View decorView = getWindow().getDecorView();
+        int uiOptions = View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+        decorView.setSystemUiVisibility(uiOptions);
 
-        mVisible = true;
-        mControlsView = binding.fullscreenContentControls;
-        mContentView = binding.fullscreenContent;
-
-        // Set up the user interaction to manually show or hide the system UI.
-        mContentView.setOnClickListener(new View.OnClickListener() {
+        SurfaceView surfaceView = findViewById(R.id.surface_view);
+        surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
-            public void onClick(View view) {
-                toggle();
+            public void surfaceCreated(SurfaceHolder holder) {
+                // The Surface is ready for rendering
+                initVulkan(holder.getSurface());
+            }
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                // Handle surface size or format changes here
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                // Cleanup Vulkan resources
+                cleanup();
             }
         });
-
-        // Upon interacting with UI controls, delay any scheduled hide()
-        // operations to prevent the jarring behavior of controls going away
-        // while interacting with the UI.
-        binding.dummyButton.setOnTouchListener(mDelayHideTouchListener);
+        // Set touch listener to capture touch events
+        decorView.setOnTouchListener(new View.OnTouchListener() {
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getAction()) {
+                    case MotionEvent.ACTION_DOWN:
+                    case MotionEvent.ACTION_MOVE:
+                        // Normalize x, y coordinates by the view's width and height
+                        updateTouch(event.getX() / v.getWidth(), event.getY() / v.getHeight(), true);
+                        return true;
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL:
+                        updateTouch(event.getX() / v.getWidth(), event.getY() / v.getHeight(), false);
+                        return true;
+                }
+                return false;
+            }
+        });
     }
 
     @Override
-    protected void onPostCreate(Bundle savedInstanceState) {
-        super.onPostCreate(savedInstanceState);
-
-        // Trigger the initial hide() shortly after the activity has been
-        // created, to briefly hint to the user that UI controls
-        // are available.
-        delayedHide(100);
+    protected void onResume() {
+        super.onResume();
+        startRenderLoop();
     }
 
-    private void toggle() {
-        if (mVisible) {
-            hide();
-        } else {
-            show();
+    @Override
+    protected void onPause() {
+        stopRenderLoop();
+        super.onPause();
+    }
+
+    private void startRenderLoop() {
+        running = true;
+        renderThread = new Thread(() -> {
+            long lastTime = System.nanoTime();
+            final double ns = 1000000000.0 / 60.0;  // 60 frames per second
+            double delta = 0;
+
+            while (running) {
+                long now = System.nanoTime();
+                delta += (now - lastTime);// / ns;
+                lastTime = now;
+
+                while (delta/ns >= 1) {
+                    doDrawFrame((float)delta);  // Pass fixed delta time
+                    delta -= 1;
+                }
+
+                try {
+                    Thread.sleep(8);  // Sleep a little to yield time to the system
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        });
+        renderThread.start();
+    }
+
+    private void stopRenderLoop() {
+        running = false;
+        try {
+            renderThread.join();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
-    private void hide() {
-        // Hide UI first
-        ActionBar actionBar = getSupportActionBar();
-        if (actionBar != null) {
-            actionBar.hide();
+    private void doDrawFrame(float delta) {
+        float x, y;
+        boolean touching;
+
+        // Copy the values to local variables to minimize the synchronization time.
+        synchronized (this) {
+            x = lastTouchX;
+            y = lastTouchY;
+            touching = isTouching;
         }
-        mControlsView.setVisibility(View.GONE);
-        mVisible = false;
 
-        // Schedule a runnable to remove the status and navigation bar after a delay
-        mHideHandler.removeCallbacks(mShowPart2Runnable);
-        mHideHandler.postDelayed(mHidePart2Runnable, UI_ANIMATION_DELAY);
-    }
-
-    private void show() {
-        // Show the system bar
-        if (Build.VERSION.SDK_INT >= 30) {
-            mContentView.getWindowInsetsController().show(
-                    WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
-        } else {
-            mContentView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
-        }
-        mVisible = true;
-
-        // Schedule a runnable to display UI elements after a delay
-        mHideHandler.removeCallbacks(mHidePart2Runnable);
-        mHideHandler.postDelayed(mShowPart2Runnable, UI_ANIMATION_DELAY);
-    }
-
-    /**
-     * Schedules a call to hide() in delay milliseconds, canceling any
-     * previously scheduled calls.
-     */
-    private void delayedHide(int delayMillis) {
-        mHideHandler.removeCallbacks(mHideRunnable);
-        mHideHandler.postDelayed(mHideRunnable, delayMillis);
-    }
-
-
-    public boolean isVulkanSupported(Context context) {
-        PackageManager pm = context.getPackageManager();
-        return pm.hasSystemFeature(PackageManager.FEATURE_VULKAN_HARDWARE_VERSION);
+        // Pass the copied values to the native rendering method.
+        drawFrame(delta, x, y, touching);
     }
 
     private native void initVulkan(Surface surface);
-    private native void cleanupVulkan();
-    private native void drawFrame();
-    private native void touchEvent(float x, float y);
-    private native void untouchEvent();
-
+    private native void cleanup();
+    private native void drawFrame(float delta, float x, float y, boolean isTouching);
 
 }

@@ -366,6 +366,40 @@ void VulkanManager::createSwapChain() {
 }
 
 
+void VulkanManager::cleanupSwapChain() {
+    for (auto framebuffer : mFramebuffers) {
+        vkDestroyFramebuffer(mDevice, framebuffer, nullptr);
+    }
+    mFramebuffers.clear();
+
+    for (auto imageView : mSwapChainImageViews) {
+        vkDestroyImageView(mDevice, imageView, nullptr);
+    }
+    mSwapChainImageViews.clear();
+
+    vkDestroySwapchainKHR(mDevice, mSwapChain, nullptr);
+    mSwapChain = VK_NULL_HANDLE;
+
+    // Also destroy and recreate graphics pipelines if they are dependent on the swapchain size
+    vkDestroyPipeline(mDevice, mGraphicsPipeline, nullptr);
+    mGraphicsPipeline = VK_NULL_HANDLE;
+}
+
+void VulkanManager::recreateSwapChain() {
+    vkDeviceWaitIdle(mDevice);
+
+    cleanupSwapChain();  // Function to destroy old swapchain and related resources
+
+    createSwapChain();  // Recreate swapchain
+
+    createFramebuffers();  // Recreate framebuffers if necessary
+
+    // If your pipelines or other resources depend on the swapchain size, recreate them as well
+    createGraphicsPipeline();  // Only if necessary
+    // Update any necessary descriptors or buffers that depend on the swapchain size
+}
+
+
 VulkanManager::QueueFamilyIndices VulkanManager::findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
     QueueFamilyIndices indices;
 
@@ -636,19 +670,26 @@ void VulkanManager::createPipelineLayout() {
         throw std::runtime_error("failed to create descriptor set layout!");
     }
 
-    // Now create the pipeline layout that uses this descriptor set layout
+    // Define push constant range
+    VkPushConstantRange pushConstantRange{};
+    pushConstantRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT; // Or combine flags for multiple stages
+    pushConstantRange.offset = 0;
+    pushConstantRange.size = sizeof(PushConstantData); // Make sure this size matches the structure in shaders
+
+    // Create the pipeline layout that includes both descriptor set layouts and push constants
     VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
     pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     pipelineLayoutInfo.setLayoutCount = 1; // We have one descriptor set layout
     pipelineLayoutInfo.pSetLayouts = &descriptorSetLayout;
-    pipelineLayoutInfo.pushConstantRangeCount = 0; // Optional: For push constants
-    pipelineLayoutInfo.pPushConstantRanges = nullptr; // Optional: Push constants
+    pipelineLayoutInfo.pushConstantRangeCount = 1; // We are using push constants
+    pipelineLayoutInfo.pPushConstantRanges = &pushConstantRange;
 
     if (vkCreatePipelineLayout(mDevice, &pipelineLayoutInfo, nullptr, &mComputePipelineLayout) != VK_SUCCESS) {
         throw std::runtime_error("failed to create pipeline layout!");
     }
 
-    // vkDestroyDescriptorSetLayout(mDevice, descriptorSetLayout, nullptr); // Clean up on exit tbd.
+    // It's generally good practice to keep the descriptor set layout around if you will use it later
+    // for creating descriptor sets, do not destroy it immediately after creating the pipeline layout
 }
 
 
@@ -874,6 +915,19 @@ void VulkanManager::initImagesInFlight() {
     }
 }
 
+void VulkanManager::recordComputeOperations(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
+    // Bind the compute pipeline
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, mComputePipeline);
+
+    // Bind descriptor sets for compute shader
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, mComputePipelineLayout, 0, 1, &mDescriptorSet, 0, nullptr);
+
+    // Dispatch the compute operations, you need to define how many groups to dispatch
+    uint32_t groupCountX = (mSwapChainExtent.width + 15) / 16;  // Assuming each group handles a 16x16 block
+    uint32_t groupCountY = (mSwapChainExtent.height + 15) / 16;
+    vkCmdDispatch(commandBuffer, groupCountX, groupCountY, 1);
+}
+
 void VulkanManager::recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex) {
     // Command buffer begin info
     VkCommandBufferBeginInfo beginInfo{};
@@ -981,58 +1035,78 @@ void VulkanManager::createShaderBuffers() {
 }
 
 // Let's let JNI call this so the app can pause and resume, lifecycle etc.
-void VulkanManager::drawFrame() {
+void VulkanManager::drawFrame(float delta, float x, float y, bool isTouching) {
     static int currentFrame = 0;
+
     // Wait for the previous frame to finish
     vkWaitForFences(mDevice, 1, &mInFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
     uint32_t imageIndex;
-    vkAcquireNextImageKHR(mDevice, mSwapChain, UINT64_MAX, mImageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
+    VkResult result = vkAcquireNextImageKHR(mDevice, mSwapChain, UINT64_MAX, mImageAvailableSemaphores[currentFrame], VK_NULL_HANDLE, &imageIndex);
 
-    // Check if a previous frame is using this image (i.e., there is its fence to wait on)
+    if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR) {
+        // Handle swapchain recreation
+        recreateSwapChain();
+        return;
+    } else if (result != VK_SUCCESS) {
+        throw std::runtime_error("Failed to acquire swap chain image!");
+    }
+
     if (mImagesInFlight[imageIndex] != VK_NULL_HANDLE) {
         vkWaitForFences(mDevice, 1, &mImagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
     }
-    // Mark the image as now being in use by this frame
     mImagesInFlight[imageIndex] = mInFlightFences[currentFrame];
 
-    vkResetFences(mDevice, 1, &mInFlightFences[currentFrame]);
+    // Prepare for compute operations
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 
+    vkResetCommandBuffer(mComputeCommandBuffer, 0);
+    vkBeginCommandBuffer(mComputeCommandBuffer, &beginInfo);
+
+    PushConstantData pcData{delta, 0.1f, static_cast<int>(mSwapChainExtent.width), static_cast<int>(mSwapChainExtent.height), glm::vec2(x, y), isTouching};
+    vkCmdPushConstants(mComputeCommandBuffer, mComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(PushConstantData), &pcData);
+    recordComputeOperations(mComputeCommandBuffer, imageIndex);
+    vkEndCommandBuffer(mComputeCommandBuffer);
+
+    VkSubmitInfo computeSubmitInfo{};
+    computeSubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    computeSubmitInfo.commandBufferCount = 1;
+    computeSubmitInfo.pCommandBuffers = &mComputeCommandBuffer;
+    vkQueueSubmit(mComputeQueue, 1, &computeSubmitInfo, mInFlightFences[currentFrame]);
+
+    // Graphics queue submission
     vkResetCommandBuffer(mCommandBuffers[currentFrame], 0);
     recordCommandBuffer(mCommandBuffers[currentFrame], imageIndex);
 
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-
-    VkSemaphore waitSemaphores[] = {mImageAvailableSemaphores[currentFrame]};
+    VkSubmitInfo graphicsSubmitInfo{};
+    graphicsSubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    VkSemaphore waitSemaphores[] = {mRenderFinishedSemaphores[currentFrame]};
     VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-    submitInfo.waitSemaphoreCount = 1;
-    submitInfo.pWaitSemaphores = waitSemaphores;
-    submitInfo.pWaitDstStageMask = waitStages;
-
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &mCommandBuffers[currentFrame];
-
+    graphicsSubmitInfo.waitSemaphoreCount = 1;
+    graphicsSubmitInfo.pWaitSemaphores = waitSemaphores;
+    graphicsSubmitInfo.pWaitDstStageMask = waitStages;
+    graphicsSubmitInfo.commandBufferCount = 1;
+    graphicsSubmitInfo.pCommandBuffers = &mCommandBuffers[currentFrame];
     VkSemaphore signalSemaphores[] = {mRenderFinishedSemaphores[currentFrame]};
-    submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = signalSemaphores;
+    graphicsSubmitInfo.signalSemaphoreCount = 1;
+    graphicsSubmitInfo.pSignalSemaphores = signalSemaphores;
+    vkQueueSubmit(mGraphicsQueue, 1, &graphicsSubmitInfo, mInFlightFences[currentFrame]);
 
-    vkQueueSubmit(mGraphicsQueue, 1, &submitInfo, mInFlightFences[currentFrame]);
-
+    // Presenting the image
     VkPresentInfoKHR presentInfo{};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
     presentInfo.pWaitSemaphores = signalSemaphores;
-
     VkSwapchainKHR swapChains[] = {mSwapChain};
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = swapChains;
     presentInfo.pImageIndices = &imageIndex;
-
     vkQueuePresentKHR(mPresentQueue, &presentInfo);
 
     currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
+
 
 void VulkanManager::cleanup() {
     if (mInstance != VK_NULL_HANDLE) {
@@ -1083,12 +1157,18 @@ void VulkanManager::cleanup() {
 
 
 }
-
-void VulkanManager::pushTouch(float x, float y) {
-    float touch[2] = {x, y};
+/*
+void VulkanManager::updateTouch(float x, float y, bool isTouching) {
+    PushConstantData pcData{};
+    pcData.deltaTime = calculateDeltaTime(); // Implement this based on your timing logic
+    pcData.visc = 0.1f; // Example viscosity value
+    pcData.width = mSwapChainExtent.width;
+    pcData.height = mSwapChainExtent.height;
+    pcData.touchPos = glm::vec2(x, y);
+    pcData.isTouching = isTouching;
     vkCmdPushConstants(mComputeCommandBuffer, mComputePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(touch), touch);
 }
-
+*/
 
 // JNI
 
@@ -1099,7 +1179,7 @@ JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_myapp_MyActivity_initVulkan(JNIEnv* env, jobject, jobject surface) {
+Java_com_example_myapp_MainActivity_initVulkan(JNIEnv* env, jobject, jobject surface) {
     if (vkManager == nullptr) {
         ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
         vkManager = new VulkanManager(window); // will call initVulcan()
@@ -1107,21 +1187,25 @@ Java_com_example_myapp_MyActivity_initVulkan(JNIEnv* env, jobject, jobject surfa
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_myapp_MyActivity_drawFrame(JNIEnv*, jobject) {
+Java_com_aniviza_fingersmoke20_MainActivity_drawFrame(JNIEnv* env, jobject obj, jfloat delta, jfloat x, jfloat y, jboolean isTouching) {
     if (vkManager != nullptr) {
-        vkManager->drawFrame();
+        vkManager->drawFrame(delta, x, y, isTouching);
     }
 }
-
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_myapp_MyActivity_cleanupVulkan(JNIEnv*, jobject) {
+Java_com_example_myapp_MainActivity_cleanupVulkan(JNIEnv*, jobject) {
     if (vkManager != nullptr) {
-        //vkManager->cleanup(); // done in destructor
-
         delete vkManager;
         vkManager = nullptr;  // Reset the pointer after deletion to avoid dangling pointer issues
     }
 }
 
-
+/*
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_myapp_MainActivity_updateTouch(JNIEnv *env, jobject, jfloat x, jfloat y, jboolean isTouching) {
+    if (vkManager != nullptr) {
+        vkManager->updateTouch(x, y, isTouching);
+    }
+}
+*/
 

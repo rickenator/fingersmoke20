@@ -31,7 +31,6 @@ public:
     ~VulkanManager();
 
     int initVulkan();
-    void drawFrame();
     void cleanup();
 
     VkPhysicalDevice pickSuitableDevice(const std::vector<VkPhysicalDevice>& devices,
@@ -60,11 +59,23 @@ public:
         std::vector<VkPresentModeKHR> presentModes;
     };
 
+    struct PushConstantData {
+        float deltaTime;
+        float visc;
+        int width;
+        int height;
+        glm::vec2 touchPos;
+        bool isTouching;
+    };
+
+
     SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface);
     VkSurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<VkSurfaceFormatKHR>& availableFormats);
     VkPresentModeKHR chooseSwapPresentMode(const std::vector<VkPresentModeKHR>& availablePresentModes);
     VkExtent2D chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, VkExtent2D actualExtent);
     void createSwapChain();
+    void cleanupSwapChain();
+    void recreateSwapChain();
     VkExtent2D getWindowExtent();
     void createGraphicsPipeline();
     void createComputePipeline();
@@ -77,16 +88,18 @@ public:
     void initSynchronization();
     void initSemaphores();
     void initImagesInFlight();
+    void recordComputeOperations(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void createCommandBufferForCompute();
     void createFramebuffers();
-    void pushTouch(float x, float y);
+    void updateTouch(float x, float y, bool isTouching);
     void createPipelineLayout();
     void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                                      VkMemoryPropertyFlags properties,
                                      VkBuffer& buffer,
                                      VkDeviceMemory& bufferMemory);
     void createShaderBuffers();
+    void drawFrame(float delta, float x, float y, bool isTouching);
 
 
 private:
@@ -99,7 +112,7 @@ private:
 
     VkQueue mGraphicsQueue;
     VkQueue mPresentQueue;
-    VkQueue mCommandQueue;
+    VkQueue mComputeQueue;
 
     VkSwapchainKHR mSwapChain;
     VkExtent2D mSwapChainExtent;
