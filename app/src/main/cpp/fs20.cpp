@@ -4,10 +4,9 @@
 
 #include "fs20.h"
 
-VulkanManager::VulkanManager(ANativeWindow *window)
-        : mWindow(window), mInstance(VK_NULL_HANDLE) {
-    initVulkan();
-}
+
+VulkanManager::VulkanManager(JavaVM* jvm, jobject globalActivityRef, ANativeWindow *window)
+        : mJvm(jvm), mActivity(globalActivityRef), mWindow(window), mInstance(VK_NULL_HANDLE) {}
 
 VulkanManager::~VulkanManager() {
     cleanup();
@@ -30,7 +29,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 int VulkanManager::initVulkan() {
     VkApplicationInfo appInfo = {};
     appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "Hello Vulkan";
+    appInfo.pApplicationName = "VulkanManager";
     appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
     appInfo.pEngineName = "No Engine";
     appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
@@ -40,28 +39,33 @@ int VulkanManager::initVulkan() {
     createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     createInfo.pApplicationInfo = &appInfo;
 
-    const std::vector<const char*> validationLayers = {
+    const std::vector<const char *> validationLayers = {
             "VK_LAYER_KHRONOS_validation"
     };
 
-    const std::vector<const char*> extensions = {
-            VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
-            VK_KHR_SURFACE_EXTENSION_NAME,
+    const std::vector<const char *> extensions = {
+            //VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+            //VK_KHR_SURFACE_EXTENSION_NAME,
             VK_KHR_ANDROID_SURFACE_EXTENSION_NAME
     };
 
-    createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
-    createInfo.ppEnabledLayerNames = validationLayers.data();
+
     createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
     createInfo.ppEnabledExtensionNames = extensions.data();
 
+    if (checkLayerSupport() == VK_SUCCESS) {
+        createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+        createInfo.ppEnabledLayerNames = validationLayers.data();
+    } else {
+        createInfo.enabledLayerCount = 0;
+    }
     VkResult result = vkCreateInstance(&createInfo, nullptr, &mInstance);
     if (result != VK_SUCCESS) {
-        std::cerr << "Failed to create Vulkan instance!" << std::endl;
+        LOGE("Failed to create Vulkan instance! %d",result);
         return -1;
     }
 
-
+#ifdef VKUTILDEBUG
     // Setup Debug Messenger
     // load the EXT
     auto CreateDebugUtilsMessengerEXT = (PFN_vkCreateDebugUtilsMessengerEXT) vkGetInstanceProcAddr(mInstance, "vkCreateDebugUtilsMessengerEXT");
@@ -75,10 +79,10 @@ int VulkanManager::initVulkan() {
     debugCreateInfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
     debugCreateInfo.pfnUserCallback = debugCallback;
 
-    if (CreateDebugUtilsMessengerEXT(mInstance, &debugCreateInfo, nullptr, &mDebugMessenger) != VK_SUCCESS) {
-        throw std::runtime_error("failed to set up debug messenger!");
-    }
-
+    //if (CreateDebugUtilsMessengerEXT(mInstance, &debugCreateInfo, nullptr, &mDebugMessenger) != VK_SUCCESS) {
+     //   throw std::runtime_error("failed to set up debug messenger!");
+    //}
+#endif
     // Select Physical Device
 
     // Find all GPU with Vulkan support
@@ -94,22 +98,28 @@ int VulkanManager::initVulkan() {
 
     // now fill devices
     vkEnumeratePhysicalDevices(mInstance, &deviceCount, devices.data());
+    LOGI("There are %d devices",deviceCount);
 
     std::vector<const char*> requiredExtensions = {
             VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-            VK_KHR_SURFACE_EXTENSION_NAME,
-            VK_KHR_ANDROID_SURFACE_EXTENSION_NAME,
-            VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+            VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME,
+            VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME
     };
 
     VkPhysicalDevice selectedDevice = VK_NULL_HANDLE;
 
     selectedDevice = pickSuitableDevice(devices, requiredExtensions);
     if (selectedDevice == VK_NULL_HANDLE) {
-        throw std::runtime_error("failed to find a suitable GPU!");
+        // take the first one
+        if (deviceCount > 0) {
+            selectedDevice = devices[0];
+        } else {
+            throw std::runtime_error("failed to find a suitable GPU!");
+        }
     }
 
     mPhysicalDevice = selectedDevice;
+    //checkDeviceExtensionSupport(mPhysicalDevice, requiredExtensions);
 
     // create mDevice
     createLogicalDevice(requiredExtensions);
@@ -124,6 +134,26 @@ int VulkanManager::initVulkan() {
         std::cerr << "Failed to create Android surface!" << std::endl;
         return -1;
     }
+
+    // Check if the surface is supported by the physical device
+    VkBool32 surfaceSupported = VK_FALSE;
+    result = vkGetPhysicalDeviceSurfaceSupportKHR(mPhysicalDevice, 0, mSurface, &surfaceSupported);
+    if (result != VK_SUCCESS || !surfaceSupported) {
+        LOGE("Surface is not supported by the physical device: %d", result);
+        return -1;
+    }
+
+    // Query the surface capabilities
+    VkSurfaceCapabilitiesKHR surfaceCapabilities;
+    result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(mPhysicalDevice, mSurface, &surfaceCapabilities);
+    if (result != VK_SUCCESS) {
+        LOGE("Failed to get surface capabilities: %d", result);
+        return -1;
+    }
+
+    LOGI("Surface capabilities retrieved successfully. Min image count: %u, Max image count: %u",
+         surfaceCapabilities.minImageCount, surfaceCapabilities.maxImageCount);
+
 
     if (checkSwapchainSupport(mPhysicalDevice)) {
         createSwapChain();
@@ -142,10 +172,69 @@ int VulkanManager::initVulkan() {
     createFramebuffers();
     createShaderBuffers();
 
+    // Notify client that Vulkan is initialized
+    notifyClient();
+
     return 0;
 }
 
-std::vector<VkExtensionProperties> getAvailableExtensions(VkPhysicalDevice device) {
+bool VulkanManager::checkDeviceExtensionSupport(VkPhysicalDevice device) {
+    uint32_t extensionCount;
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
+    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+    vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
+
+    //std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
+
+    for (const auto& extension : availableExtensions) {
+        LOGI( "Available extension: %s", extension.extensionName);
+        //requiredExtensions.erase(extension.extensionName);
+    }
+
+    //if (!requiredExtensions.empty()) {
+        //for (const auto& missing : requiredExtensions) {
+            //std::cerr << "Missing extension: " << missing << "\n";
+        //}
+        //return false;
+    //}
+    return true;
+}
+
+std::vector<VkLayerProperties> VulkanManager::getAvailableLayers() {
+    uint32_t layerCount;
+    vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+    std::vector<VkLayerProperties> availableLayers(layerCount);
+    vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+    return availableLayers;
+}
+
+bool VulkanManager::isLayerAvailable(const char* layerName, const std::vector<VkLayerProperties>& availableLayers) {
+    for (const auto& layerProperties : availableLayers) {
+        if (strcmp(layerName, layerProperties.layerName) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+VkResult VulkanManager::checkLayerSupport() {
+    const std::vector<const char*> validationLayers = {
+            "VK_LAYER_KHRONOS_validation"
+    };
+
+    auto availableLayers = getAvailableLayers();
+    for (const auto& layerName : validationLayers) {
+        if (!isLayerAvailable(layerName, availableLayers)) {
+            LOGE( "Layer not available: %s", layerName);
+            return VK_ERROR_LAYER_NOT_PRESENT;
+        } else {
+            LOGI( "Layer available: %s", layerName);
+            return VK_SUCCESS;
+        }
+    }
+}
+
+std::vector<VkExtensionProperties> VulkanManager::getAvailableExtensions(VkPhysicalDevice device) {
     uint32_t extensionCount = 0;
     vkEnumerateDeviceExtensionProperties(device, nullptr,
                                          &extensionCount, nullptr);  // Get the count
@@ -155,7 +244,25 @@ std::vector<VkExtensionProperties> getAvailableExtensions(VkPhysicalDevice devic
     return extensions;
 }
 
-bool checkDeviceExtensionSupport(VkPhysicalDevice device,
+std::vector<const char*> VulkanManager::getValidationLayers() {
+    const std::vector<const char*> desiredLayers = {
+            "VK_LAYER_KHRONOS_validation"
+    };
+
+    auto availableLayers = getAvailableLayers();
+    std::vector<const char*> enabledLayers;
+
+    for (const auto& layer : desiredLayers) {
+        if (isLayerAvailable(layer, availableLayers)) {
+            enabledLayers.push_back(layer);
+        } else {
+            __android_log_print(ANDROID_LOG_WARN, "VulkanSetup", "Validation layer unavailable: %s", layer);
+        }
+    }
+    return enabledLayers;
+}
+
+bool VulkanManager::checkDeviceExtensionSupport(VkPhysicalDevice device,
                                  const std::vector<const char*>& requiredExtensions) {
     std::vector<VkExtensionProperties> availableExtensions = getAvailableExtensions(device);
 
@@ -171,13 +278,15 @@ bool checkDeviceExtensionSupport(VkPhysicalDevice device,
 VkPhysicalDevice VulkanManager::pickSuitableDevice(const std::vector<VkPhysicalDevice>& devices,
                                                    const std::vector<const char*>& requiredExtensions) {
     for (const auto& device : devices) {
+        LOGI("Found a device");
         if (checkDeviceExtensionSupport(device, requiredExtensions)) {
             // Device supports all required extensions
             return device;
         }
     }
 
-    throw std::runtime_error("failed to find a suitable GPU!");
+    return VK_NULL_HANDLE;
+    //throw std::runtime_error("failed to find a suitable GPU!");
 }
 
 // create the mDevice
@@ -185,7 +294,15 @@ void VulkanManager::createLogicalDevice(const std::vector<const char*>& required
     QueueFamilyIndices indices = findQueueFamilies(mPhysicalDevice, mSurface);
 
     std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-    std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+    std::set<uint32_t> uniqueQueueFamilies = {
+            indices.graphicsFamily.value(),
+            //indices.presentFamily.value()
+    };
+
+    // Add compute family if it's separate from graphics family
+    if (indices.computeFamily.has_value() && indices.computeFamily != indices.graphicsFamily) {
+        uniqueQueueFamilies.insert(indices.computeFamily.value());
+    }
 
     float queuePriority = 1.0f;
     for (uint32_t queueFamily : uniqueQueueFamilies) {
@@ -210,14 +327,18 @@ void VulkanManager::createLogicalDevice(const std::vector<const char*>& required
     if (vkCreateDevice(mPhysicalDevice, &createInfo, nullptr, &mDevice) != VK_SUCCESS) {
         throw std::runtime_error("failed to create logical device!");
     }
+    LOGI("Logical device created successfully.");
+    checkDeviceProperties(mPhysicalDevice, mSurface);
+
 
     // Retrieve queues from the device
+    // Note: We only have one queue for Android, it has both compute and graphics, but no presentation queue
     vkGetDeviceQueue(mDevice, indices.graphicsFamily.value(), 0, &mGraphicsQueue);
-    if (indices.presentFamily.value() == indices.graphicsFamily.value()) {
+    //if (indices.presentFamily.value() == indices.graphicsFamily.value()) {
         mPresentQueue = mGraphicsQueue;  // Same queue for graphics and presentation
-    } else {
-        vkGetDeviceQueue(mDevice, indices.presentFamily.value(), 0, &mPresentQueue);
-    }
+    //} else {
+    //    vkGetDeviceQueue(mDevice, indices.presentFamily.value(), 0, &mPresentQueue);
+    //}
 }
 
 bool VulkanManager::checkSwapchainSupport(VkPhysicalDevice device) {
@@ -236,17 +357,25 @@ bool VulkanManager::checkSwapchainSupport(VkPhysicalDevice device) {
 
 VulkanManager::SwapChainSupportDetails VulkanManager::querySwapChainSupport(VkPhysicalDevice device, VkSurfaceKHR surface) {
     SwapChainSupportDetails details;
+
+    // Query capabilities
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
 
     uint32_t formatCount;
     vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr);
+    LOGI("Format count before fetching: %d", formatCount);
     if (formatCount != 0) {
         details.formats.resize(formatCount);
-        vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data());
+        VkResult result = vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data());
+        LOGI("Fetching formats returned: %d, actual formats fetched: %d", result, formatCount);
+        for (const auto& format : details.formats) {
+            LOGI("Format found: %d, Color Space: %d", format.format, format.colorSpace);
+        }
     }
 
     uint32_t presentModeCount;
     vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, nullptr);
+
     if (presentModeCount != 0) {
         details.presentModes.resize(presentModeCount);
         vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, details.presentModes.data());
@@ -274,13 +403,18 @@ VkPresentModeKHR VulkanManager::chooseSwapPresentMode(const std::vector<VkPresen
 }
 
 VkExtent2D VulkanManager::chooseSwapExtent(const VkSurfaceCapabilitiesKHR& capabilities, VkExtent2D actualExtent) {
+
+
+    // return the extent from the native window
+    return getWindowExtent();
+    /*
     if (capabilities.currentExtent.width != UINT32_MAX) {
         return capabilities.currentExtent;
     } else {
         VkExtent2D actual = { std::max(capabilities.minImageExtent.width, std::min(capabilities.maxImageExtent.width, actualExtent.width)),
                               std::max(capabilities.minImageExtent.height, std::min(capabilities.maxImageExtent.height, actualExtent.height)) };
         return actual;
-    }
+    }*/
 }
 
 VkExtent2D VulkanManager::getWindowExtent() {
@@ -293,14 +427,38 @@ VkExtent2D VulkanManager::getWindowExtent() {
 void VulkanManager::createSwapChain() {
     SwapChainSupportDetails swapChainSupport = querySwapChainSupport(mPhysicalDevice, mSurface);
 
+    if (swapChainSupport.formats.empty() || swapChainSupport.presentModes.empty()) {
+        LOGI("failed to find suitable swap chain details!");
+        VkSurfaceFormatKHR fallbackFormat = {
+                VK_FORMAT_B8G8R8A8_UNORM,
+                VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+        };
+        swapChainSupport.formats.push_back(fallbackFormat);
+    }
+
     VkSurfaceFormatKHR surfaceFormat = chooseSwapSurfaceFormat(swapChainSupport.formats);
     VkPresentModeKHR presentMode = chooseSwapPresentMode(swapChainSupport.presentModes);
-    VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities, getWindowExtent());  // 'windowExtent' should be passed based on the window size
+
+    VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities, getWindowExtent());
+    LOGI("Extent dimensions - width: %u, height: %u", extent.width, extent.height);
 
     uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
-    if (swapChainSupport.capabilities.maxImageCount > 0 && imageCount > swapChainSupport.capabilities.maxImageCount) {
-        imageCount = swapChainSupport.capabilities.maxImageCount;
+    LOGI("Initial image count: %u, Min count: %u, Max count: %u", imageCount, swapChainSupport.capabilities.minImageCount, swapChainSupport.capabilities.maxImageCount);
+
+    // Clamp to double buffering explicitly
+    if (swapChainSupport.capabilities.maxImageCount > 0) {
+        imageCount = std::min(imageCount, swapChainSupport.capabilities.maxImageCount);
+        imageCount = std::min(imageCount, 2u);  // Clamp to two for double buffering
+    } else {
+        imageCount = std::min(imageCount, 2u);  // Assume no upper limit from maxImageCount
     }
+
+    LOGI("Clamped image count to ensure double buffering: %u", imageCount);
+
+
+    LOGI("Extents width %d height %d", extent.width, extent.height);
+
+    // What in the configuration is causing VK_ERROR_FORMAT_NOT_SUPPORTED?
 
     VkSwapchainCreateInfoKHR createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -313,16 +471,16 @@ void VulkanManager::createSwapChain() {
     createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 
     QueueFamilyIndices indices = findQueueFamilies(mPhysicalDevice, mSurface);
-    uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+    uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value()/*, indices.presentFamily.value()*/};
 
-    if (indices.graphicsFamily != indices.presentFamily) {
+    /*if (indices.graphicsFamily != indices.presentFamily) {
         createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-        createInfo.queueFamilyIndexCount = 2;
+        createInfo.queueFamilyIndexCount = 2; /////
         createInfo.pQueueFamilyIndices = queueFamilyIndices;
     } else {
-        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    }
 
+    }*/
+        createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     createInfo.preTransform = swapChainSupport.capabilities.currentTransform;
     createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
     createInfo.presentMode = presentMode;
@@ -337,11 +495,17 @@ void VulkanManager::createSwapChain() {
     vkGetSwapchainImagesKHR(mDevice, mSwapChain, &imageCount, nullptr);
     mSwapChainImages.resize(imageCount);
     vkGetSwapchainImagesKHR(mDevice, mSwapChain, &mSwapChainImageCount, mSwapChainImages.data());
-
+    // After retrieving images from the swapchain
+    for (auto image : mSwapChainImages) {
+        if (image == VK_NULL_HANDLE) {
+            throw std::runtime_error("Found uninitialized image handle!");
+        }
+    }
     mSwapChainImageFormat = surfaceFormat.format;
     mSwapChainExtent = extent;
 
     mSwapChainImageViews.resize(imageCount);
+
 
     for (size_t i = 0; i < mSwapChainImages.size(); i++) {
         VkImageViewCreateInfo createInfo{};
@@ -399,54 +563,157 @@ void VulkanManager::recreateSwapChain() {
     // Update any necessary descriptors or buffers that depend on the swapchain size
 }
 
+/*createInfo.imageFormat and createInfo.imageColorSpace: The combination of image format and color space might not be supported by the Vulkan driver or hardware. You can check the supported combinations by calling vkGetPhysicalDeviceSurfaceFormatsKHR.
+createInfo.imageExtent: The extent (width and height) of the swapchain images might not be supported. You can check the supported extent by examining the minImageExtent, maxImageExtent, and currentExtent fields of the VkSurfaceCapabilitiesKHR structure, which can be retrieved by calling vkGetPhysicalDeviceSurfaceCapabilitiesKHR.
+createInfo.imageUsage: The usage flags of the swapchain images might not be supported. You can check the supported usage flags in the supportedUsageFlags field of the VkSurfaceCapabilitiesKHR structure.
+createInfo.preTransform: The pre-transform might not be supported. You can check the supported transforms in the supportedTransforms field of the VkSurfaceCapabilitiesKHR structure.
+createInfo.compositeAlpha: The composite alpha mode might not be supported. You can check the supported composite alpha modes in the supportedCompositeAlpha field of the VkSurfaceCapabilitiesKHR structure.
+createInfo.presentMode: The present mode might not be supported. You can check the supported present modes by calling vkGetPhysicalDeviceSurfacePresentModesKHR.
+*/
+void VulkanManager::checkDeviceProperties(VkPhysicalDevice mPhysicalDevice, VkSurfaceKHR mSurface) {
+    // Query surface capabilities
+    VkSurfaceCapabilitiesKHR capabilities;
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR(mPhysicalDevice, mSurface, &capabilities);
 
-VulkanManager::QueueFamilyIndices VulkanManager::findQueueFamilies(VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
+    // Decode and log surface capabilities
+    LOGI("Surface capabilities:");
+    LOGI("Min image count: %u", capabilities.minImageCount);
+    LOGI("Max image count: %u", capabilities.maxImageCount);
+    LOGI("Current extent: width = %u, height = %u", capabilities.currentExtent.width, capabilities.currentExtent.height);
+    LOGI("Min image extent: width = %u, height = %u", capabilities.minImageExtent.width, capabilities.minImageExtent.height);
+    LOGI("Max image extent: width = %u, height = %u", capabilities.maxImageExtent.width, capabilities.maxImageExtent.height);
+    LOGI("Max image array layers: %u", capabilities.maxImageArrayLayers);
+
+    // Decode supported transforms
+    std::string supportedTransforms = decodeSurfaceTransformFlags(capabilities.supportedTransforms);
+    LOGI("Supported transforms: %s", supportedTransforms.c_str());
+    LOGI("Current transform: %s", decodeSurfaceTransformFlags(capabilities.currentTransform).c_str());
+
+    // Decode supported composite alpha
+    std::string compositeAlphaFlags = decodeCompositeAlphaFlags(capabilities.supportedCompositeAlpha);
+    LOGI("Supported composite alpha: %s", compositeAlphaFlags.c_str());
+
+    // Decode supported usage flags
+    std::string usageFlags = decodeUsageFlags(capabilities.supportedUsageFlags);
+    LOGI("Supported usage flags: %s", usageFlags.c_str());
+
+    // Query supported surface formats
+    uint32_t formatCount;
+    vkGetPhysicalDeviceSurfaceFormatsKHR(mPhysicalDevice, mSurface, &formatCount, nullptr);
+    std::vector<VkSurfaceFormatKHR> surfaceFormats(formatCount);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(mPhysicalDevice, mSurface, &formatCount, surfaceFormats.data());
+
+    LOGI("Supported surface formats:");
+    for (const auto& format : surfaceFormats) {
+        LOGI("Format: %u, Color space: %u", format.format, format.colorSpace);
+    }
+
+    // Query supported present modes
+    uint32_t presentModeCount;
+    vkGetPhysicalDeviceSurfacePresentModesKHR(mPhysicalDevice, mSurface, &presentModeCount, nullptr);
+    std::vector<VkPresentModeKHR> presentModes(presentModeCount);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(mPhysicalDevice, mSurface, &presentModeCount, presentModes.data());
+
+    LOGI("Supported present modes:");
+    for (const auto& mode : presentModes) {
+        LOGI("Present mode: %u", mode);
+    }
+}
+
+// Helper functions to decode Vulkan flags into strings
+std::string VulkanManager::decodeSurfaceTransformFlags(VkSurfaceTransformFlagsKHR flags) {
+    std::string description;
+    if (flags & VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR) description += "IDENTITY, ";
+    if (flags & VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) description += "ROTATE_90, ";
+    if (flags & VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) description += "ROTATE_180, ";
+    if (flags & VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) description += "ROTATE_270, ";
+    if (flags & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_BIT_KHR) description += "HORIZONTAL_MIRROR, ";
+    if (flags & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_90_BIT_KHR) description += "HORIZONTAL_MIRROR_ROTATE_90, ";
+    if (flags & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_180_BIT_KHR) description += "HORIZONTAL_MIRROR_ROTATE_180, ";
+    if (flags & VK_SURFACE_TRANSFORM_HORIZONTAL_MIRROR_ROTATE_270_BIT_KHR) description += "HORIZONTAL_MIRROR_ROTATE_270, ";
+    if (flags & VK_SURFACE_TRANSFORM_INHERIT_BIT_KHR) description += "INHERIT, ";
+    if (description.empty()) description = "None";
+    else description.pop_back(); // Remove trailing comma
+    return description;
+}
+
+std::string VulkanManager::decodeCompositeAlphaFlags(VkCompositeAlphaFlagsKHR flags) {
+    std::string description;
+    if (flags & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) description += "OPAQUE, ";
+    if (flags & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR) description += "PRE_MULTIPLIED, ";
+    if (flags & VK_COMPOSITE_ALPHA_POST_MULTIPLIED_BIT_KHR) description += "POST_MULTIPLIED, ";
+    if (flags & VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR) description += "INHERIT, ";
+    if (description.empty()) description = "None";
+    else description.pop_back(); // Remove trailing comma
+    return description;
+}
+
+std::string VulkanManager::decodeUsageFlags(VkImageUsageFlags flags) {
+    std::string description;
+    if (flags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) description += "TRANSFER_SRC, ";
+    if (flags & VK_IMAGE_USAGE_TRANSFER_DST_BIT) description += "TRANSFER_DST, ";
+    if (flags & VK_IMAGE_USAGE_SAMPLED_BIT) description += "SAMPLED, ";
+    if (flags & VK_IMAGE_USAGE_STORAGE_BIT) description += "STORAGE, ";
+    if (flags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) description += "COLOR_ATTACHMENT, ";
+    if (flags & VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT) description += "DEPTH_STENCIL_ATTACHMENT, ";
+    if (flags & VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT) description += "TRANSIENT_ATTACHMENT, ";
+    if (flags & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT) description += "INPUT_ATTACHMENT, ";
+    if (description.empty()) description = "None";
+    else description.pop_back(); // Remove trailing comma
+    return description;
+}
+
+
+
+VulkanManager::QueueFamilyIndices VulkanManager::findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface) {
     QueueFamilyIndices indices;
 
     uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
     std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilies.data());
+    vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+    LOGI("Checking %d queue families.", queueFamilyCount);
 
     int i = 0;
     for (const auto& queueFamily : queueFamilies) {
-        // Check for graphics capability
+        LOGI("Queue Family #%d: Flags=0x%X", i, queueFamily.queueFlags);
+
         if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-            if (!indices.graphicsFamily.has_value()) {
-                indices.graphicsFamily = i;
-            }
-        }
+            indices.graphicsFamily = i;
+            LOGI("Graphics queue found at index %d.", i);
 
-        // Check for presentation capability
-        VkBool32 presentSupport = false;
-        vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, i, surface, &presentSupport);
-        if (presentSupport && !indices.presentFamily.has_value()) {
-            indices.presentFamily = i;
-        }
-
-        // Check for a separate compute capability
-        if (queueFamily.queueFlags & VK_QUEUE_COMPUTE_BIT) {
-            if (!indices.computeFamily.has_value() && !(queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-                // Prefer a separate compute queue if available and not also a graphics queue
+            if (queueFamily.queueFlags & VK_QUEUE_COMPUTE_BIT) {
                 indices.computeFamily = i;
+                LOGI("Compute queue found at index %d.", i);
+            }
+            if (queueFamily.queueFlags & VK_QUEUE_TRANSFER_BIT) {
+                indices.transferFamily = i;
+                LOGI("Transfer queue found at index %d.", i);
+            }
+            if (queueFamily.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) {
+                indices.sparseBindingFamily = i;
+                LOGI("Sparse binding queue found at index %d.", i);
             }
         }
 
-        // Ensure all required queue families are found
-        if (indices.isComplete()) {
-            break;
+        VkBool32 presentSupport = false;
+        vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+        if (presentSupport) {
+            indices.presentFamily = i;
+            LOGI("Present queue found at index %d.", i);
         }
 
         i++;
     }
 
-    // If a separate compute queue isn't found, it can default to using the graphics queue
-    if (!indices.computeFamily.has_value() && indices.graphicsFamily.has_value()) {
-        indices.computeFamily = indices.graphicsFamily;
+    if (!indices.isComplete()) {
+        LOGI("Not all required queue families were found.");
     }
 
     return indices;
 }
+
 
 void VulkanManager::createGraphicsPipeline() {
     // Assuming shaders are precompiled to SPIR-V and stored as .spv files in cmake
@@ -1038,6 +1305,7 @@ void VulkanManager::createShaderBuffers() {
 void VulkanManager::drawFrame(float delta, float x, float y, bool isTouching) {
     static int currentFrame = 0;
 
+    LOGI("x=%f y=%f ",x,y);
     // Wait for the previous frame to finish
     vkWaitForFences(mDevice, 1, &mInFlightFences[currentFrame], VK_TRUE, UINT64_MAX);
 
@@ -1155,7 +1423,46 @@ void VulkanManager::cleanup() {
     vkDestroyBuffer(mDevice, mPressureOutputBuffer, nullptr);
     vkFreeMemory(mDevice, mPressureOutputBufferMemory, nullptr);
 
+    JNIEnv* env;
+    mJvm->AttachCurrentThread(&env, nullptr);
+    env->DeleteGlobalRef(mActivity);  // Clean up global reference
+    mJvm->DetachCurrentThread();
 
+}
+
+void VulkanManager::notifyClient() {
+    JNIEnv* env = nullptr;
+    // Attach the current thread to the JVM to obtain a valid JNIEnv pointer
+    if (mJvm->AttachCurrentThread(&env, nullptr) != JNI_OK) {
+        return; // Failed to attach the thread
+    }
+
+    // Get the MainActivity class
+    jclass clazz = env->FindClass("com/aniviza/fingersmoke20/MainActivity");
+    if (clazz == nullptr) {
+        mJvm->DetachCurrentThread();
+        return; // Class not found
+    }
+
+    // Get the ID of the method that starts the rendering loop
+    jmethodID methodId = env->GetMethodID(clazz, "startRenderLoop", "()V");
+    if (methodId == nullptr) {
+        mJvm->DetachCurrentThread();
+        return; // Method not found
+    }
+
+    // Find the global reference to the MainActivity object
+    // Assuming 'mainActivityObj' is globally stored during initialization
+    if (mActivity == nullptr) {
+        mJvm->DetachCurrentThread();
+        return; // Object reference not found
+    }
+
+    // Call the Java method
+    env->CallVoidMethod(mActivity, methodId);
+
+    // Clean up and detach from the thread
+    mJvm->DetachCurrentThread();
 }
 /*
 void VulkanManager::updateTouch(float x, float y, bool isTouching) {
@@ -1175,15 +1482,29 @@ void VulkanManager::updateTouch(float x, float y, bool isTouching) {
 static JavaVM* jvm;
 JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     jvm = vm;
-    return VK_SUCCESS;
+    return JNI_VERSION_1_6;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_myapp_MainActivity_initVulkan(JNIEnv* env, jobject, jobject surface) {
-    if (vkManager == nullptr) {
-        ANativeWindow *window = ANativeWindow_fromSurface(env, surface);
-        vkManager = new VulkanManager(window); // will call initVulcan()
-    }
+Java_com_aniviza_fingersmoke20_MainActivity_initVulkan(JNIEnv* env, jobject mainActivity, jobject surface) {
+    jobject globalActivityRef = env->NewGlobalRef(mainActivity);  // Create a global reference to the MainActivity object
+
+    jobject globalSurface = env->NewGlobalRef(surface); // Create a global reference to keep the surface
+
+    std::thread initThread([globalActivityRef, globalSurface]() {
+        JNIEnv* newEnv;
+        jvm->AttachCurrentThread(&newEnv, nullptr); // Attach the thread to get a valid JNIEnv
+
+        ANativeWindow *window = ANativeWindow_fromSurface(newEnv, globalSurface);
+        if (vkManager == nullptr) {
+            vkManager = new VulkanManager(jvm,globalActivityRef,window); // Initialize Vulkan
+            vkManager->initVulkan();
+        }
+
+        newEnv->DeleteGlobalRef(globalSurface); // Cleanup global reference
+        jvm->DetachCurrentThread(); // Detach thread when done
+    });
+    initThread.detach(); // Detach the thread to avoid having to join it later
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -1193,19 +1514,11 @@ Java_com_aniviza_fingersmoke20_MainActivity_drawFrame(JNIEnv* env, jobject obj, 
     }
 }
 extern "C" JNIEXPORT void JNICALL
-Java_com_example_myapp_MainActivity_cleanupVulkan(JNIEnv*, jobject) {
+Java_com_aniviza_fingersmoke20_MainActivity_cleanup(JNIEnv*, jobject) {
     if (vkManager != nullptr) {
         delete vkManager;
         vkManager = nullptr;  // Reset the pointer after deletion to avoid dangling pointer issues
     }
 }
 
-/*
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_myapp_MainActivity_updateTouch(JNIEnv *env, jobject, jfloat x, jfloat y, jboolean isTouching) {
-    if (vkManager != nullptr) {
-        vkManager->updateTouch(x, y, isTouching);
-    }
-}
-*/
 

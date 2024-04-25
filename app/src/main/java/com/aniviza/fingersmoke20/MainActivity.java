@@ -2,12 +2,14 @@ package com.aniviza.fingersmoke20;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Handler;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.WindowManager;
+import android.util.Log;
 
 public class MainActivity extends Activity {
 
@@ -21,6 +23,7 @@ public class MainActivity extends Activity {
     private volatile float lastTouchX = 0;
     private volatile float lastTouchY = 0;
     private volatile boolean isTouching = false;
+    private volatile boolean isInitialized;
 
     private void updateTouch(float x, float y, boolean touching) {
         this.lastTouchX = x;
@@ -32,6 +35,10 @@ public class MainActivity extends Activity {
         float deltaTime = (currentTime - lastFrameTime) / 1_000_000_000.0f;
         lastFrameTime = currentTime;
         return deltaTime;
+    }
+
+    public void log(String msg) {
+        Log.i("VulkanActivity",msg);
     }
 
     @Override
@@ -50,8 +57,16 @@ public class MainActivity extends Activity {
         surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
-                // The Surface is ready for rendering
-                initVulkan(holder.getSurface());
+                // The Surface is "ready" for rendering
+                new Handler().postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        initVulkan(holder.getSurface());
+                        isInitialized = true;
+                        log("surface created, initializing VulkanManager");
+                        //startRenderLoop();
+                    }
+                }, 5000); // delay for 500 milliseconds
             }
 
             @Override
@@ -88,16 +103,24 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        startRenderLoop();
+        if (isInitialized)
+            startRenderLoop();
     }
 
     @Override
     protected void onPause() {
-        stopRenderLoop();
         super.onPause();
+        stopRenderLoop();
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        cleanup();
     }
 
     private void startRenderLoop() {
+        log("Starting render loop");
         running = true;
         renderThread = new Thread(() -> {
             long lastTime = System.nanoTime();
@@ -109,15 +132,16 @@ public class MainActivity extends Activity {
                 delta += (now - lastTime);// / ns;
                 lastTime = now;
 
-                while (delta/ns >= 1) {
+                while (delta/ns >= 1.0) {
+                    log("<Frame>");
                     doDrawFrame((float)delta);  // Pass fixed delta time
-                    delta -= 1;
+                    delta -= 1.0;
                 }
 
                 try {
                     Thread.sleep(8);  // Sleep a little to yield time to the system
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+
                 }
             }
         });
@@ -143,6 +167,8 @@ public class MainActivity extends Activity {
             y = lastTouchY;
             touching = isTouching;
         }
+
+        log("doDrawFrame: "+delta+" x:"+x+" y:"+y);
 
         // Pass the copied values to the native rendering method.
         drawFrame(delta, x, y, touching);

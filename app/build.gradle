@@ -7,6 +7,12 @@ android {
     namespace 'com.aniviza.fingersmoke20'
     compileSdk 34
 
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ['src/main/jniLibs']
+        }
+    }
+
     defaultConfig {
         applicationId "com.aniviza.fingersmoke20"
         minSdk 29
@@ -58,7 +64,7 @@ android {
     //ndk {
         //abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64' // Include the architectures you need
     //}
-    ndkVersion '25.1.8937393'
+    ndkVersion '27.0.11718014 rc1'
     buildToolsVersion '34.0.0'
 }
 

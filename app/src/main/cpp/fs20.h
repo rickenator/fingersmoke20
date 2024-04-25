@@ -22,12 +22,19 @@
 #include <fstream>
 #include <stdexcept>
 #include <array>
+#include <thread>
 
 #define MAX_FRAMES_IN_FLIGHT 2
 
+
+#define LOG_TAG "VulkanManager"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+
 class VulkanManager {
 public:
-    VulkanManager(ANativeWindow* window);
+    VulkanManager(JavaVM* jvm, jobject activityRef, ANativeWindow* window);
     ~VulkanManager();
 
     int initVulkan();
@@ -35,20 +42,26 @@ public:
 
     VkPhysicalDevice pickSuitableDevice(const std::vector<VkPhysicalDevice>& devices,
                                         const std::vector<const char*>& requiredExtensions);
+    bool checkDeviceExtensionSupport(VkPhysicalDevice device,
+                                                    const std::vector<const char*>& requiredExtensions);
     void createLogicalDevice(const std::vector<const char*>& requiredExtensions);
+    bool checkDeviceExtensionSupport(VkPhysicalDevice device);
     bool checkSwapchainSupport(VkPhysicalDevice device);
 
 
     struct QueueFamilyIndices {
         std::optional<uint32_t> graphicsFamily;
         std::optional<uint32_t> presentFamily;
-        std::optional<uint32_t> computeFamily;  // Dedicated compute family
+        std::optional<uint32_t> computeFamily;
+        std::optional<uint32_t> transferFamily;
+        std::optional<uint32_t> sparseBindingFamily;
 
         bool isComplete() const {
-            // For basic functionality, ensure graphics and present families are available.
-            // Compute family is optional unless specifically required for separate compute operations.
-            return graphicsFamily.has_value() && presentFamily.has_value() && (computeFamily.has_value() || computeFamily == graphicsFamily);
+            return graphicsFamily.has_value() && presentFamily.has_value();
+            // Only check for graphics and present for basic functionality.
+            // Compute, transfer, and sparse binding are optional but recommended if used.
         }
+
     };
 
     QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device, VkSurfaceKHR surface);
@@ -100,7 +113,13 @@ public:
                                      VkDeviceMemory& bufferMemory);
     void createShaderBuffers();
     void drawFrame(float delta, float x, float y, bool isTouching);
-
+    std::vector<const char*> getValidationLayers();
+    VkResult checkLayerSupport();
+    bool isLayerAvailable(const char* layerName,
+                          const std::vector<VkLayerProperties>& availableLayers);
+    std::vector<VkLayerProperties> getAvailableLayers();
+    std::vector<VkExtensionProperties> getAvailableExtensions(VkPhysicalDevice device);
+    void checkDeviceProperties(VkPhysicalDevice mPhysicalDevice, VkSurfaceKHR mSurface);
 
 private:
     ANativeWindow* mWindow;
@@ -155,6 +174,18 @@ private:
     VkBuffer mPressureOutputBuffer;
     VkDeviceMemory mPressureOutputBufferMemory;
 
- };
+    // JNI
+    JavaVM* mJvm;
+    jobject mActivity;
+
+
+    std::string decodeSurfaceTransformFlags(VkSurfaceTransformFlagsKHR flags);
+
+    std::string decodeCompositeAlphaFlags(VkCompositeAlphaFlagsKHR flags);
+
+    std::string decodeUsageFlags(VkImageUsageFlags flags);
+
+    void notifyClient();
+};
 
 #endif //FINGERSMOKE2_0_FS20_H
