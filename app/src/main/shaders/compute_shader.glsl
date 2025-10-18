@@ -20,7 +20,7 @@ layout (push_constant) uniform Params {
     int width;
     int height;
     vec2 touchPos;  // Added touch position in normalized coordinates [0,1]
-    bool isTouching;  // Whether there is an active touch
+    int isTouching;  // Whether there is an active touch
 } params;
 
 // Helper function to compute index from 2D coordinates
@@ -45,7 +45,7 @@ void main() {
 
     // Heat application based on touch
     float distanceToTouch = distance(vec2(x, y) / vec2(params.width, params.height), params.touchPos);
-    float touchEffect = params.isTouching ? exp(-distanceToTouch * 10.0) : 0.0;
+    float touchEffect = params.isTouching != 0 ? exp(-distanceToTouch * 10.0) : 0.0;
 
     // Viscosity and heat application
     vec2 laplacianV = vec2(

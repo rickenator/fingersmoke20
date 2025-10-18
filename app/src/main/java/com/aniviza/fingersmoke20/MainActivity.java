@@ -2,7 +2,6 @@ package com.aniviza.fingersmoke20;
 
 import android.app.Activity;
 import android.os.Bundle;
-import android.os.Handler;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
@@ -20,15 +19,18 @@ public class MainActivity extends Activity {
     private long lastFrameTime = System.nanoTime();
     private Thread renderThread;
     private volatile boolean running = false;
+    private final Object touchLock = new Object();
     private volatile float lastTouchX = 0;
     private volatile float lastTouchY = 0;
     private volatile boolean isTouching = false;
     private volatile boolean isInitialized;
 
     private void updateTouch(float x, float y, boolean touching) {
-        this.lastTouchX = x;
-        this.lastTouchY = y;
-        this.isTouching = touching;
+        synchronized (touchLock) {
+            this.lastTouchX = x;
+            this.lastTouchY = y;
+            this.isTouching = touching;
+        }
     }
     private float deltaTime() {
         long currentTime = System.nanoTime();
@@ -58,15 +60,9 @@ public class MainActivity extends Activity {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {
                 // The Surface is "ready" for rendering
-                new Handler().postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        initVulkan(holder.getSurface());
-                        isInitialized = true;
-                        log("surface created, initializing VulkanManager");
-                        //startRenderLoop();
-                    }
-                }, 5000); // delay for 500 milliseconds
+                initVulkan(holder.getSurface());
+                isInitialized = true;
+                log("surface created, initializing VulkanManager");
             }
 
             @Override
@@ -77,6 +73,8 @@ public class MainActivity extends Activity {
             @Override
             public void surfaceDestroyed(SurfaceHolder holder) {
                 // Cleanup Vulkan resources
+                stopRenderLoop();
+                isInitialized = false;
                 cleanup();
             }
         });
@@ -84,15 +82,23 @@ public class MainActivity extends Activity {
         decorView.setOnTouchListener(new View.OnTouchListener() {
             @Override
             public boolean onTouch(View v, MotionEvent event) {
+                float width = v.getWidth();
+                float height = v.getHeight();
+                if (width <= 0 || height <= 0) {
+                    return false;
+                }
+
+                float normalizedX = clamp01(event.getX() / width);
+                float normalizedY = clamp01(event.getY() / height);
+
                 switch (event.getAction()) {
                     case MotionEvent.ACTION_DOWN:
                     case MotionEvent.ACTION_MOVE:
-                        // Normalize x, y coordinates by the view's width and height
-                        updateTouch(event.getX() / v.getWidth(), event.getY() / v.getHeight(), true);
+                        updateTouch(normalizedX, normalizedY, true);
                         return true;
                     case MotionEvent.ACTION_UP:
                     case MotionEvent.ACTION_CANCEL:
-                        updateTouch(event.getX() / v.getWidth(), event.getY() / v.getHeight(), false);
+                        updateTouch(normalizedX, normalizedY, false);
                         return true;
                 }
                 return false;
@@ -116,32 +122,36 @@ public class MainActivity extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+        stopRenderLoop();
         cleanup();
+        isInitialized = false;
     }
 
     private void startRenderLoop() {
         log("Starting render loop");
+        if (running && renderThread != null) {
+            return;
+        }
         running = true;
         renderThread = new Thread(() -> {
             long lastTime = System.nanoTime();
-            final double ns = 1000000000.0 / 60.0;  // 60 frames per second
-            double delta = 0;
+            final double targetNs = 1_000_000_000.0 / 60.0;
+            double accumulator = 0.0;
 
             while (running) {
                 long now = System.nanoTime();
-                delta += (now - lastTime);// / ns;
+                accumulator += (now - lastTime) / targetNs;
                 lastTime = now;
 
-                while (delta/ns >= 1.0) {
-                    log("<Frame>");
-                    doDrawFrame((float)delta);  // Pass fixed delta time
-                    delta -= 1.0;
+                while (accumulator >= 1.0) {
+                    doDrawFrame((float)(1.0 / 60.0));
+                    accumulator -= 1.0;
                 }
 
                 try {
-                    Thread.sleep(8);  // Sleep a little to yield time to the system
+                    Thread.sleep(2);
                 } catch (InterruptedException e) {
-
+                    Thread.currentThread().interrupt();
                 }
             }
         });
@@ -150,10 +160,13 @@ public class MainActivity extends Activity {
 
     private void stopRenderLoop() {
         running = false;
-        try {
-            renderThread.join();
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (renderThread != null) {
+            try {
+                renderThread.join();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            renderThread = null;
         }
     }
 
@@ -162,7 +175,7 @@ public class MainActivity extends Activity {
         boolean touching;
 
         // Copy the values to local variables to minimize the synchronization time.
-        synchronized (this) {
+        synchronized (touchLock) {
             x = lastTouchX;
             y = lastTouchY;
             touching = isTouching;
@@ -177,5 +190,9 @@ public class MainActivity extends Activity {
     private native void initVulkan(Surface surface);
     private native void cleanup();
     private native void drawFrame(float delta, float x, float y, boolean isTouching);
+
+    private static float clamp01(float value) {
+        return Math.max(0f, Math.min(1f, value));
+    }
 
 }
