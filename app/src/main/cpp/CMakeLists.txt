@@ -2,7 +2,6 @@
 cmake_minimum_required(VERSION 3.4.1)
 
 # Declares the project name. The project name can be accessed via ${ PROJECT_NAME},
-cmake_minimum_required(VERSION 3.4.1)
 project("fingersmoke20")
 
 find_package(Vulkan REQUIRED)
@@ -11,30 +10,36 @@ add_library(${CMAKE_PROJECT_NAME} SHARED fs20.cpp)
 
 find_library(log-lib log)
 
-# Compiles shaders to SPIR-V
-set(SHADER_SOURCES
-        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/compute_shader.glsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vertex_shader.glsl"
-        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fragment_shader.glsl"
-)
-set(SHADER_OUTPUTS
-        "${CMAKE_CURRENT_BINARY_DIR}/compute_shader.spv"
-        "${CMAKE_CURRENT_BINARY_DIR}/vertex_shader.spv"
-        "${CMAKE_CURRENT_BINARY_DIR}/fragment_shader.spv"
-)
+find_program(GLSLANG_VALIDATOR NAMES glslangValidator)
 
-foreach(shader_idx RANGE ${num_shaders})
-    list(GET SHADER_SOURCES ${shader_idx} SHADER_SOURCE)
-    list(GET SHADER_OUTPUTS ${shader_idx} SHADER_OUTPUT)
-    add_custom_command(
-            OUTPUT ${SHADER_OUTPUT}
-            COMMAND ${GLSLANG_VALIDATOR} -V ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
-            DEPENDS ${SHADER_SOURCE}
-            COMMENT "Compiling ${SHADER_SOURCE}"
+if(GLSLANG_VALIDATOR)
+    set(SHADER_SOURCES
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/compute_shader.glsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vertex_shader.glsl"
+            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fragment_shader.glsl"
     )
-endforeach()
 
-add_custom_target(CompileAllShaders ALL DEPENDS ${SHADER_OUTPUTS})
+    set(SHADER_OUTPUTS)
+    foreach(SHADER_SOURCE IN LISTS SHADER_SOURCES)
+        get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
+        set(SPIRV_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv")
+        add_custom_command(
+                OUTPUT ${SPIRV_OUTPUT}
+                COMMAND ${GLSLANG_VALIDATOR} -V ${SHADER_SOURCE} -o ${SPIRV_OUTPUT}
+                DEPENDS ${SHADER_SOURCE}
+                COMMENT "Compiling ${SHADER_SOURCE}"
+        )
+        list(APPEND SHADER_OUTPUTS ${SPIRV_OUTPUT})
+    endforeach()
+
+    add_custom_target(CompileAllShaders ALL DEPENDS ${SHADER_OUTPUTS})
+else()
+    message(WARNING "glslangValidator not found; shader compilation will be skipped.")
+endif()
+
+if(TARGET CompileAllShaders)
+    add_dependencies(${CMAKE_PROJECT_NAME} CompileAllShaders)
+endif()
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -frtti -fexceptions")
 set(CMAKE_BUILD_TYPE "Debug")

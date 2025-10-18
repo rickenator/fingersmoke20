@@ -8,9 +8,12 @@
 #include <jni.h>
 #include <android/native_window_jni.h>
 #include <android/log.h>
+#include <android/asset_manager.h>
+#include <android/asset_manager_jni.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_android.h>
 #include <Vertex.h>
+#include <glm/glm.hpp>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -34,7 +37,7 @@
 
 class VulkanManager {
 public:
-    VulkanManager(JavaVM* jvm, jobject activityRef, ANativeWindow* window);
+    VulkanManager(JavaVM* jvm, jobject activityRef, ANativeWindow* window, AAssetManager* assetManager);
     ~VulkanManager();
 
     int initVulkan();
@@ -78,7 +81,7 @@ public:
         int width;
         int height;
         glm::vec2 touchPos;
-        bool isTouching;
+        int isTouching;
     };
 
 
@@ -90,6 +93,7 @@ public:
     void cleanupSwapChain();
     void recreateSwapChain();
     VkExtent2D getWindowExtent();
+    void createRenderPass();
     void createGraphicsPipeline();
     void createComputePipeline();
     void setupComputeDescriptorSet();
@@ -101,10 +105,16 @@ public:
     void initSynchronization();
     void initSemaphores();
     void initImagesInFlight();
-    void recordComputeOperations(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+    void recordComputeOperations(VkCommandBuffer commandBuffer);
     void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
     void createCommandBufferForCompute();
+    void createCommandPool();
+    void createCommandBuffers();
+    void createDescriptorPool();
     void createFramebuffers();
+    void destroyShaderBuffers();
+    void createVertexBuffer();
+    void destroyVertexBuffer();
     void updateTouch(float x, float y, bool isTouching);
     void createPipelineLayout();
     void createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
@@ -142,20 +152,24 @@ private:
 
     VkRenderPass mRenderPass;
     VkPipeline mGraphicsPipeline;
+    VkPipelineLayout mGraphicsPipelineLayout;
 
     VkPipeline mComputePipeline;
     VkPipelineLayout mComputePipelineLayout;
 
     VkImage mTextureImage; // to share between compute and fragment
+    VkDeviceMemory mTextureImageMemory;
 
     std::vector<VkFence> mInFlightFences;
     std::vector<VkFence> mImagesInFlight;
     std::vector<VkSemaphore> mImageAvailableSemaphores;
     std::vector<VkSemaphore> mRenderFinishedSemaphores;
+    std::vector<VkSemaphore> mComputeFinishedSemaphores;
 
     std::vector<VkCommandBuffer> mCommandBuffers;
     VkCommandBuffer mComputeCommandBuffer;
     VkCommandPool mComputeCommandPool;
+    VkCommandPool mCommandPool;
 
     VkDescriptorSetLayout mDescriptorSetLayout;
     VkDescriptorPool mDescriptorPool;
@@ -174,9 +188,14 @@ private:
     VkBuffer mPressureOutputBuffer;
     VkDeviceMemory mPressureOutputBufferMemory;
 
+    VkBuffer mVertexBuffer;
+    VkDeviceMemory mVertexBufferMemory;
+    uint32_t mVertexCount;
+
     // JNI
     JavaVM* mJvm;
     jobject mActivity;
+    AAssetManager* mAssetManager;
 
 
     std::string decodeSurfaceTransformFlags(VkSurfaceTransformFlagsKHR flags);
