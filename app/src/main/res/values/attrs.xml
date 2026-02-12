@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <declare-styleable name="FluidSimulation">
+        <attr name="gridSize" format="integer" />
+        <attr name="viscosity" format="float" />
+        <attr name="renderMode" format="enum">
+            <enum name="continuous" value="0" />
+            <enum name="onDemand" value="1" />
+        </attr>
+    </declare-styleable>
+</resources>
