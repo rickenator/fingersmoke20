@@ -1,0 +1,90 @@
+#ifndef GPU_FLUID_SOLVER_H
+#define GPU_FLUID_SOLVER_H
+
+#include "Grid2D.h"
+#include <memory>
+#include <vector>
+
+namespace fluidsim {
+
+class GPULikeFluidSolver {
+public:
+    GPULikeFluidSolver(int width, int height);
+    ~GPULikeFluidSolver();
+
+    void backupState();
+    void step(float dt, float viscosity);
+    void addTouchForce(int x, int y, float radius, float strength);
+    void setDensity(int x, int y, float value);
+    float getDensity(int x, int y) const;
+    void setVelocity(int x, int y, float vx, float vy);
+    void getVelocity(int x, int y, float& vx, float& vy) const;
+
+private:
+    int mWidth, mHeight;
+    std::unique_ptr<Grid2D> mDensity, mVelocityX, mVelocityY;
+    std::unique_ptr<Grid2D> mPreviousDensity, mPreviousVelocityX, mPreviousVelocityY;
+
+    void diffuse(int b, Grid2D& x, const Grid2D& x0, float dt, float diff);
+    void project(Grid2D& velocX, Grid2D& velocY, Grid2D& p, Grid2D& div);
+    void advect(int b, Grid2D& d, const Grid2D& d0, const Grid2D& velocX, const Grid2D& velocY, float dt);
+    void setBoundary(int b, Grid2D& x);
+};
+
+// GPU-based fluid solver using Vulkan compute shaders
+class GPUFluidSolver {
+public:
+    GPUFluidSolver(int width, int height);
+    ~GPUFluidSolver();
+
+    // Step the simulation with given time step and viscosity
+    void step(float dt, float viscosity);
+
+    // Add force at touch position
+    void addTouchForce(int x, int y, float radius, float strength);
+
+    // Get density grid for rendering
+    Grid2D& getDensity() { return *mDensity; }
+    const Grid2D& getDensity() const { return *mDensity; }
+
+    Grid2D& getVelocityX() { return *mVelocityX; }
+    const Grid2D& getVelocityX() const { return *mVelocityX; }
+
+    Grid2D& getVelocityY() { return *mVelocityY; }
+    const Grid2D& getVelocityY() const { return *mVelocityY; }
+
+    // Individual grid access methods
+    void setDensity(int x, int y, float value);
+    float getDensity(int x, int y) const;
+    void setVelocity(int x, int y, float vx, float vy);
+    void getVelocity(int x, int y, float& vx, float& vy) const;
+
+private:
+    int mWidth, mHeight;
+
+    // CPU-side grids for rendering (data is updated from GPU)
+    std::unique_ptr<Grid2D> mDensity;
+    std::unique_ptr<Grid2D> mVelocityX;
+    std::unique_ptr<Grid2D> mVelocityY;
+
+    // Previous state for CPU-side data
+    std::unique_ptr<Grid2D> mPreviousDensity;
+    std::unique_ptr<Grid2D> mPreviousVelocityX;
+    std::unique_ptr<Grid2D> mPreviousVelocityY;
+
+    // CPU fallback solver
+    std::unique_ptr<GPULikeFluidSolver> mSolver;
+
+    // Back up CPU state before GPU step
+    void backupState();
+
+    // Upload CPU data to GPU
+    void uploadData();
+
+    // Download GPU data to CPU
+    void downloadData();
+};
+
+} // namespace fluidsim
+
+#endif // GPU_FLUID_SOLVER_H
