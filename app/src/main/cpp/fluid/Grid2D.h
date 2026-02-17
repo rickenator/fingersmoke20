@@ -22,6 +22,9 @@ public:
     float* getData() { return mData.data(); }
     const float* getData() const { return mData.data(); }
 
+    void set(int x, int y, float value);
+    float get(int x, int y) const;
+
 private:
     int mWidth, mHeight;
     std::vector<float> mData;

@@ -19,4 +19,17 @@ void Grid2D::copyFrom(const float* data) {
     std::memcpy(mData.data(), data, mWidth * mHeight * sizeof(float));
 }
 
+void Grid2D::set(int x, int y, float value) {
+    if (x >= 0 && x < mWidth && y >= 0 && y < mHeight) {
+        mData[x + y * mWidth] = value;
+    }
+}
+
+float Grid2D::get(int x, int y) const {
+    if (x >= 0 && x < mWidth && y >= 0 && y < mHeight) {
+        return mData[x + y * mWidth];
+    }
+    return 0.0f;
+}
+
 } // namespace fluidsim

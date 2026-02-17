@@ -30,9 +30,17 @@ private:
     std::unique_ptr<Grid2D> mPreviousVelocityX;
     std::unique_ptr<Grid2D> mPreviousVelocityY;
 
-    void diffuse(float dt);
+    void diffuse(float dt, float viscosity, int iterations);
     void advect(float dt);
     void project();
+
+    // Helper methods for Gauss-Seidel relaxation
+    void solveDensity(float dt, float viscosity, int iterations);
+    void solveVelocityX(float dt, float viscosity, int iterations);
+    void solveVelocityY(float dt, float viscosity, int iterations);
+
+    // Copy current state to previous state buffers
+    void backupState();
 };
 
 } // namespace fluidsim
