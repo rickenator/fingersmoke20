@@ -2,292 +2,30 @@
 #include <cstring>
 #include <stdexcept>
 #include <fstream>
+#include <android_asset.h>
 
 namespace fluidsim {
 
-// Full GPU implementation using Vulkan compute shaders
-// Includes all necessary shaders and buffer management
-
-// Vertex shader for rendering
-constexpr const char* kVertexShader = R"(
-#version 450 core
-
-layout(location = 0) in vec2 aPosition;
-layout(location = 1) in vec2 aTexCoord;
-
-out vec2 vTexCoord;
-
-void main() {
-    vTexCoord = aTexCoord;
-    gl_Position = vec4(aPosition, 0.0, 1.0);
-}
-)";
-
-// Fragment shader for rendering
-constexpr const char* kFragmentShader = R"(
-#version 450 core
-
-uniform sampler2D uDensityTexture;
-uniform float uScale;
-
-in vec2 vTexCoord;
-out vec4 fragColor;
-
-void main() {
-    float density = texture(uDensityTexture, vTexCoord).r * uScale;
-    fragColor = vec4(density, density, density, density);
-}
-)";
-
-// Compute shader for diffusion (solving linear system with Gauss-Seidel)
-constexpr const char* kComputeDiffuseShader = R"(
-#version 450 core
-#extension GL_ARB_shader_storage_buffer_object : require
-
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
-layout(std430, binding = 0) readonly buffer SrcBuffer {
-    float src[];
-};
-
-layout(std430, binding = 1) writeonly buffer DstBuffer {
-    float dst[];
-};
-
-uniform int width;
-uniform int height;
-uniform float a;
-uniform float dt;
-uniform float diffCoeff;
-
-void main() {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-
-    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-        int idx = x + y * width;
-        float sum = src[idx] + a * (
-            src[idx - 1] + src[idx + 1] +
-            src[idx - width] + src[idx + width]
-        );
-        dst[idx] = sum / (1.0f + 4.0f * a);
+// Helper function to load shader from external file
+// Returns nullptr if file cannot be read or has invalid format
+static std::vector<char> loadShaderFromFile(AAssetManager* assetManager, const char* path) {
+    AAsset* asset = AAssetManager_open(assetManager, path, AASSET_MODE_STREAMING);
+    if (!asset) {
+        return {};
     }
-}
-)";
 
-// Compute shader for advection (backtracing with bilinear interpolation)
-constexpr const char* kComputeAdvectShader = R"(
-#version 450 core
-#extension GL_ARB_shader_storage_buffer_object : require
+    off_t assetSize = AAsset_getLength(asset);
+    std::vector<char> shaderCode(assetSize);
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+    int bytes_read = AAsset_read(asset, shaderCode.data(), assetSize);
+    AAsset_close(asset);
 
-layout(std430, binding = 0) readonly buffer SrcBuffer {
-    float src[];
-};
-
-layout(std430, binding = 1) writeonly buffer DstBuffer {
-    float dst[];
-};
-
-uniform int width;
-uniform int height;
-uniform float dt;
-uniform float halfWidth;
-uniform float halfHeight;
-
-void main() {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-
-    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-        int idx = x + y * width;
-
-        // Backtrace
-        float backX = x - dt * src[idx] * halfWidth;
-        float backY = y - dt * src[idx + width] * halfHeight;
-
-        // Clamp to interior
-        backX = clamp(backX, 1.0f, float(width - 2));
-        backY = clamp(backY, 1.0f, float(height - 2));
-
-        // Bilinear interpolation
-        int x0 = int(backX);
-        int y0 = int(backY);
-        int x1 = x0 + 1;
-        int y1 = y0 + 1;
-
-        float fx = clamp(backX - float(x0), 0.0f, 1.0f);
-        float fy = clamp(backY - float(y0), 0.0, 1.0);
-
-        int idx00 = x0 + y0 * width;
-        int idx10 = x1 + y0 * width;
-        int idx01 = x0 + y1 * width;
-        int idx11 = x1 + y1 * width;
-
-        dst[idx] = mix(
-            mix(src[idx00], src[idx10], fx),
-            mix(src[idx01], src[idx11], fx),
-            fy
-        );
+    if (bytes_read != assetSize) {
+        return {};
     }
+
+    return shaderCode;
 }
-)";
-
-// Compute shader for pressure projection (Poisson solve)
-constexpr const char* kComputeProjectShader = R"(
-#version 450 core
-#extension GL_ARB_shader_storage_buffer_object : require
-
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
-layout(std430, binding = 0) readonly buffer VXBuffer {
-    float vx[];
-};
-
-layout(std430, binding = 1) readonly buffer VYBuffer {
-    float vy[];
-};
-
-layout(std430, binding = 2) writeonly buffer DivBuffer {
-    float divergence[];
-};
-
-layout(std430, binding = 3) writeonly buffer PresBuffer {
-    float pressure[];
-};
-
-layout(std430, binding = 4) writeonly buffer VXOutBuffer {
-    float vxOut[];
-};
-
-layout(std430, binding = 5) writeonly buffer VYOutBuffer {
-    float vyOut[];
-};
-
-uniform int width;
-uniform int height;
-uniform float halfWidth;
-uniform float halfHeight;
-
-void main() {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-
-    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-        int idx = x + y * width;
-
-        // Calculate divergence
-        float vx = vx[idx];
-        float vy = vy[idx];
-
-        float vx_left = vx[idx - 1];
-        float vx_right = vx[idx + 1];
-        float vy_bottom = vy[idx - width];
-        float vy_top = vy[idx + width];
-
-        divergence[idx] = -0.5f * halfWidth * (
-            vx - vx_left +
-            vx - vx_right +
-            vy - vy_bottom +
-            vy - vy_top
-        );
-
-        // Initialize pressure
-        pressure[idx] = 0.0f;
-    }
-}
-)";
-
-constexpr const char* kComputeProjectPressureShader = R"(
-#version 450 core
-#extension GL_ARB_shader_storage_buffer_object : require
-
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
-layout(std430, binding = 0) readonly buffer DivBuffer {
-    float divergence[];
-};
-
-layout(std430, binding = 1) writeonly buffer PresBuffer {
-    float pressure[];
-};
-
-layout(std430, binding = 4) writeonly buffer VXOutBuffer {
-    float vxOut[];
-};
-
-layout(std430, binding = 5) writeonly buffer VYOutBuffer {
-    float vyOut[];
-};
-
-uniform int width;
-uniform int height;
-uniform float halfWidth;
-uniform float halfHeight;
-
-void main() {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-
-    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
-        int idx = x + y * width;
-
-        // Poisson solve using Gauss-Seidel
-        float div = divergence[idx];
-        pressure[idx] = (div + pressure[idx - 1] +
-                         pressure[idx + 1] +
-                         pressure[idx - width] +
-                         pressure[idx + width]) * 0.25f;
-
-        // Subtract pressure gradient from velocity
-        vxOut[idx] = vx[idx] - 0.5f * halfWidth * (pressure[idx + 1] - pressure[idx - 1]);
-        vyOut[idx] = vy[idx] - 0.5f * halfHeight * (pressure[idx + width] - pressure[idx - width]);
-    }
-}
-)";
-
-constexpr const char* kComputeAddForceShader = R"(
-#version 450 core
-#extension GL_ARB_shader_storage_buffer_object : require
-
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-
-layout(std430, binding = 0) readonly buffer ForceInfo {
-    float centerX;
-    float centerY;
-    float radius;
-    float strength;
-    int width;
-    int height;
-};
-
-layout(std430, binding = 1) writeonly buffer VXBuffer {
-    float vx[];
-};
-
-layout(std430, binding = 2) writeonly buffer VYBuffer {
-    float vy[];
-};
-
-void main() {
-    int x = int(gl_GlobalInvocationID.x);
-    int y = int(gl_GlobalInvocationID.y);
-
-    int idx = x + y * width;
-
-    float dx = x - centerX;
-    float dy = y - centerY;
-    float distSq = dx * dx + dy * dy;
-    float radiusSq = radius * radius;
-
-    if (distSq < radiusSq) {
-        float falloff = 1.0f - sqrt(distSq) / radius;
-        vx[idx] += dx * falloff * strength;
-        vy[idx] += dy * falloff * strength;
-    }
-}
-)";
 
 GPUFluidSolver::GPUFluidSolver(int width, int height)
     : mWidth(width), mHeight(height) {
