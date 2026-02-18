@@ -21,6 +21,7 @@ set(SOURCES
     fluid/NavierStokesSimulator.cpp
     fluid/Grid2D.cpp
     fluid/Solver.cpp
+    fluid/GPUFluidSolver.cpp
 )
 
 # Create shared library
@@ -41,17 +42,32 @@ target_link_libraries(fluidsim
 
 # Compile shaders if glslc is available
 find_program(GLSLC glslc)
-if(GLSLC AND EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/../assets/shaders/fluid_compute.comp)
-    set(SHADER_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/../assets/shaders/fluid_compute.comp)
-    set(SHADER_OUTPUT ${CMAKE_CURRENT_SOURCE_DIR}/../assets/shaders/fluid_compute.spv)
+set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../assets/shaders)
 
-    add_custom_command(
-        OUTPUT ${SHADER_OUTPUT}
-        COMMAND ${GLSLC} ${SHADER_SOURCE} -o ${SHADER_OUTPUT}
-        DEPENDS ${SHADER_SOURCE}
-        COMMENT "Compiling GLSL compute shader to SPIR-V"
-    )
+# List of shader files to compile
+set(SHADER_FILES
+    ${SHADER_DIR}/fluid_addforce.comp
+    ${SHADER_DIR}/fluid_advect.comp
+    ${SHADER_DIR}/fluid_project.comp
+)
 
-    add_custom_target(shaders DEPENDS ${SHADER_OUTPUT})
-    add_dependencies(fluidsim shaders)
+if(GLSLC)
+    # Create a custom target to compile all shaders
+    set(SPIRV_OUTPUTS)
+    foreach(SHADER_FILE ${SHADER_FILES})
+        get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
+        set(SPIRV_FILE ${SHADER_DIR}/${SHADER_NAME}.spv)
+
+        add_custom_command(
+            OUTPUT ${SPIRV_FILE}
+            COMMAND ${GLSLC} ${SHADER_FILE} -o ${SPIRV_FILE}
+            DEPENDS ${SHADER_FILE}
+            COMMENT "Compiling GLSL compute shader ${SHADER_NAME} to SPIR-V"
+        )
+
+        list(APPEND SPIRV_OUTPUTS ${SPIRV_FILE})
+    endforeach()
+
+    add_custom_target(fluid_shaders DEPENDS ${SPIRV_OUTPUTS})
+    add_dependencies(fluidsim fluid_shaders)
 endif()

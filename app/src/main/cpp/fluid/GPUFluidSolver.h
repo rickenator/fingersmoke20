@@ -2,6 +2,7 @@
 #define GPU_FLUID_SOLVER_H
 
 #include "Grid2D.h"
+#include "VulkanContext.h"
 #include <memory>
 #include <vector>
 
@@ -83,6 +84,20 @@ private:
 
     // Download GPU data to CPU
     void downloadData();
+
+    // Vulkan context and resources
+    VulkanContext* mContext = nullptr;
+
+    // GPU buffers
+    std::unique_ptr<VulkanBuffer> mDensityBuffer;
+    std::unique_ptr<VulkanBuffer> mVelocityXBuffer;
+    std::unique_ptr<VulkanBuffer> mVelocityYBuffer;
+    std::unique_ptr<VulkanBuffer> mPreviousDensityBuffer;
+    std::unique_ptr<VulkanBuffer> mPreviousVelocityXBuffer;
+    std::unique_ptr<VulkanBuffer> mPreviousVelocityYBuffer;
+    std::unique_ptr<VulkanBuffer> mPressureBuffer;
+    std::unique_ptr<VulkanBuffer> mForceBuffer;
+    std::unique_ptr<VulkanBuffer> mUniformBuffer;
 };
 
 } // namespace fluidsim

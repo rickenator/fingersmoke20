@@ -1,0 +1,56 @@
+#version 450
+
+// Advect the density and velocity fields using backtracing
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) uniform readonly image2D uDensity;
+layout(binding = 1, rgba32f) uniform readonly image2D uVelocityX;
+layout(binding = 2, rgba32f) uniform readonly image2D uVelocityY;
+layout(binding = 3, rgba32f) uniform writeonly image2D uDensityOut;
+layout(binding = 4, rgba32f) uniform writeonly image2D uVelocityXOut;
+layout(binding = 5, rgba32f) uniform writeonly image2D uVelocityYOut;
+
+layout(push_constant) uniform Uniforms {
+    float dt;
+价款    float viscosity;
+    float resolutionX;
+    float resolutionY;
+} u;
+
+// Bilinear interpolation
+vec4 texture2DBilinear(readonly image2D img, vec2 texcoord) {
+    ivec2 texel = ivec2(texcoord);
+    vec2 frac = fract(texcoord);
+
+    vec4 c00 = imageLoad(img, texel);
+    vec4 c10 = imageLoad(img, texel + ivec2(1, 0));
+    vec4 c01 = imageLoad(img, texel + ivec2(0, 1));
+    vec4 c11 = imageLoad(img, texel + ivec2(1, 1));
+
+    vec4 c0 = mix(c00, c10, frac.x);
+    vec4 c1 = mix(c01, c11, frac.x);
+
+    return mix(c0, c1, frac.y);
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    vec2 uv = vec2(texel) / vec2(u.resolutionX, u.resolutionY);
+
+    // Backtrace: where did the particle at current position come from?
+    vec2 velocity = texture2DBilinear(uVelocityX, uv).xy * vec2(u.resolutionX, u.resolutionY);
+    vec2 backtrace = uv - velocity * u.dt;
+
+    // Clamp backtrace to valid range
+    backtrace = clamp(backtrace, 0.0, 1.0);
+
+    // Sample backtrace position
+    vec4 density = texture2DBilinear(uDensity, backtrace);
+    vec2 velocityXY = texture2DBilinear(uVelocityX, backtrace).xy * vec2(u.resolutionX, u.resolutionY);
+    vec2 velocityYZ = texture2DBilinear(uVelocityY, backtrace).xy * vec2(u.resolutionX, u.resolutionY);
+
+    // Write output
+    imageStore(uDensityOut, texel, density);
+    imageStore(uVelocityXOut, texel, vec4(velocityXY, 0.0, 1.0));
+    imageStore(uVelocityYOut, texel, vec4(velocityYZ, 0.0, 1.0));
+}

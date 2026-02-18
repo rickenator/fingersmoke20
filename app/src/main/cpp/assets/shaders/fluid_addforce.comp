@@ -1,0 +1,35 @@
+#version 450
+
+// Add force at touch position with radial falloff
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) uniform writeonly image2D uDensity;
+layout(binding = 1, rgba32f) uniform writeonly image2D uVelocityX;
+layout(binding = 2, rgba32f) uniform writeonly image2D uVelocityY;
+
+layout(push_constant) uniform Uniforms {
+    float touchX;
+    float touchY;
+    float radius;
+    float strength;
+    float resolutionX;
+    float resolutionY;
+} u;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+
+    // Calculate distance from touch position
+    float dx = texel.x - u.touchX;
+    float dy = texel.y - u.touchY;
+    float dist = sqrt(dx * dx + dy * dy);
+
+    // Apply radial falloff
+    if (dist < u.radius) {
+        float falloff = (1.0 - dist / u.radius) * u.strength;
+
+        // Update velocity
+        imageStore(uVelocityX, texel, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(uVelocityY, texel, vec4(0.0, falloff, 0.0, 1.0));
+    }
+}
