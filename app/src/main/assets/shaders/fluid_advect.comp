@@ -1,0 +1,55 @@
+#version 450 core
+#extension GL_ARB_shader_storage_buffer_object : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer SrcBuffer {
+    float src[];
+};
+
+layout(std430, binding = 1) writeonly buffer DstBuffer {
+    float dst[];
+};
+
+uniform int width;
+uniform int height;
+uniform float dt;
+uniform float halfWidth;
+uniform float halfHeight;
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+
+    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+        int idx = x + y * width;
+
+        // Backtrace
+        float backX = x - dt * src[idx] * halfWidth;
+        float backY = y - dt * src[idx + width] * halfHeight;
+
+        // Clamp to interior
+        backX = clamp(backX, 1.0f, float(width - 2));
+        backY = clamp(backY, 1.0f, float(height - 2));
+
+        // Bilinear interpolation
+        int x0 = int(backX);
+        int y0 = int(backY);
+        int x1 = x0 + 1;
+        int y1 = y0 + 1;
+
+        float fx = clamp(backX - float(x0), 0.0f, 1.0f);
+        float fy = clamp(backY - float(y0), 0.0, 1.0);
+
+        int idx00 = x0 + y0 * width;
+        int idx10 = x1 + y0 * width;
+        int idx01 = x0 + y1 * width;
+        int idx11 = x1 + y1 * width;
+
+        dst[idx] = mix(
+            mix(src[idx00], src[idx10], fx),
+            mix(src[idx01], src[idx11], fx),
+            fy
+        );
+    }
+}

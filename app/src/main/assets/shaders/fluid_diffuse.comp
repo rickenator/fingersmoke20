@@ -1,0 +1,32 @@
+#version 450 core
+#extension GL_ARB_shader_storage_buffer_object : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer SrcBuffer {
+    float src[];
+};
+
+layout(std430, binding = 1) writeonly buffer DstBuffer {
+    float dst[];
+};
+
+uniform int width;
+uniform int height;
+uniform float a;
+uniform float dt;
+uniform float diffCoeff;
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+
+    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+        int idx = x + y * width;
+        float sum = src[idx] + a * (
+            src[idx - 1] + src[idx + 1] +
+            src[idx - width] + src[idx + width]
+        );
+        dst[idx] = sum / (1.0f + 4.0f * a);
+    }
+}

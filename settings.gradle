@@ -2,16 +2,11 @@ pluginManagement {
     repositories {
         google()
         mavenCentral()
-        gradlePluginPortal()
     }
-}
-dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-    repositories {
-        google()
-        mavenCentral()
+    plugins {
+        id 'com.android.application' version '8.7.3'
     }
 }
 
-rootProject.name = "FingerSmoke2.0"
-include ':app'
+rootProject.name = "Foo"
+include(":app")

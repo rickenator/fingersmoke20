@@ -1,0 +1,45 @@
+#version 450 core
+#extension GL_ARB_shader_storage_buffer_object : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer DivBuffer {
+    float divergence[];
+};
+
+layout(std430, binding = 1) writeonly buffer PresBuffer {
+    float pressure[];
+};
+
+layout(std430, binding = 4) writeonly buffer VXOutBuffer {
+    float vxOut[];
+};
+
+layout(std430, binding = 5) writeonly buffer VYOutBuffer {
+    float vyOut[];
+};
+
+uniform int width;
+uniform int height;
+uniform float halfWidth;
+uniform float halfHeight;
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+
+    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+        int idx = x + y * width;
+
+        // Poisson solve using Gauss-Seidel
+        float div = divergence[idx];
+        pressure[idx] = (div + pressure[idx - 1] +
+                         pressure[idx + 1] +
+                         pressure[idx - width] +
+                         pressure[idx + width]) * 0.25f;
+
+        // Subtract pressure gradient from velocity
+        vxOut[idx] = vx[idx] - 0.5f * halfWidth * (pressure[idx + 1] - pressure[idx - 1]);
+        vyOut[idx] = vy[idx] - 0.5f * halfHeight * (pressure[idx + width] - pressure[idx - width]);
+    }
+}

@@ -1,0 +1,57 @@
+#version 450
+
+// Diffuse density and velocity (simulate viscosity)
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) uniform readonly image2D uDensity;
+layout(binding = 1, rgba32f) uniform readonly image2D uVelocityX;
+layout(binding = 2, rgba32f) uniform readonly image2D uVelocityY;
+layout(binding = 3, rgba32f) uniform writeonly image2D uDensityOut;
+layout(binding = 4, rgba32f) uniform writeonly image2D uVelocityXOut;
+layout(binding = 5, rgba32f) uniform writeonly image2D uVelocityYOut;
+
+layout(push_constant) uniform Uniforms {
+    float dt;
+    float viscosity;
+    float resolutionX;
+    float resolutionY;
+} u;
+
+// Gaussian blur kernel for diffusion
+vec4 gaussianBlur(readonly image2D img, ivec2 texel) {
+    vec4 sum = vec4(0.0);
+    float weightSum = 0.0;
+
+    // 3x3 Gaussian kernel
+    float kernel[9] = float[](
+        1.0, 4.0, 1.0,
+        4.0, 16.0, 4.0,
+        1.0, 4.0, 1.0
+    );
+
+    int idx = 0;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            vec4 value = imageLoad(img, texel + ivec2(x, y));
+            float weight = kernel[idx];
+            sum += value * weight;
+            weightSum += weight;
+            idx++;
+        }
+    }
+
+    return sum / weightSum;
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+
+    // Apply diffusion by smoothing with neighboring values
+    vec4 density = gaussianBlur(uDensity, texel);
+    vec2 velocityX = gaussianBlur(uVelocityX, texel).xy;
+    vec2 velocityY = gaussianBlur(uVelocityY, texel).xy;
+
+    imageStore(uDensityOut, texel, density);
+    imageStore(uVelocityXOut, texel, vec4(velocityX, 0.0, 1.0));
+    imageStore(uVelocityYOut, texel, vec4(velocityY, 0.0, 1.0));
+}
