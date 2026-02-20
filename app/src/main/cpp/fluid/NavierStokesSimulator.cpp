@@ -1,6 +1,9 @@
 #include "NavierStokesSimulator.h"
 #include "Solver.h"
-#include <iostream>
+#include <android/log.h>
+
+#define LOG_TAG "FluidSim"
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace fluidsim {
 
