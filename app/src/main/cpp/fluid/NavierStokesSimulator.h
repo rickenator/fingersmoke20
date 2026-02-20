@@ -2,6 +2,7 @@
 #define NAVIER_STOKES_SIMULATOR_H
 
 #include "VulkanContext.h"
+#include "Solver.h"
 #include <memory>
 
 namespace fluidsim {

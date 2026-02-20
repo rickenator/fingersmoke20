@@ -21,6 +21,10 @@ public:
     void setVelocity(int x, int y, float vx, float vy);
     void getVelocity(int x, int y, float& vx, float& vy) const;
 
+    Grid2D* getDensity() { return mDensity.get(); }
+    Grid2D* getVelocityX() { return mVelocityX.get(); }
+    Grid2D* getVelocityY() { return mVelocityY.get(); }
+
 private:
     int mWidth, mHeight;
     std::unique_ptr<Grid2D> mDensity, mVelocityX, mVelocityY;
@@ -37,6 +41,10 @@ class GPUFluidSolver {
 public:
     GPUFluidSolver(int width, int height);
     ~GPUFluidSolver();
+
+    bool initialize(VulkanContext* context);
+    void setContext(VulkanContext* context);
+    void cleanup();
 
     // Step the simulation with given time step and viscosity
     void step(float dt, float viscosity);

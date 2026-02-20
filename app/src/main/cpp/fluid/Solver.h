@@ -26,6 +26,7 @@ private:
     std::unique_ptr<Grid2D> mVelocityX;
     std::unique_ptr<Grid2D> mVelocityY;
     std::unique_ptr<Grid2D> mPressure;
+    std::unique_ptr<Grid2D> mDivergence;
     std::unique_ptr<Grid2D> mPreviousDensity;
     std::unique_ptr<Grid2D> mPreviousVelocityX;
     std::unique_ptr<Grid2D> mPreviousVelocityY;

@@ -1,5 +1,6 @@
 #include "Solver.h"
 #include <cstring>
+#include <algorithm>
 
 namespace fluidsim {
 
@@ -9,6 +10,7 @@ Solver::Solver(int width, int height)
     mVelocityX = std::make_unique<Grid2D>(width, height);
     mVelocityY = std::make_unique<Grid2D>(width, height);
     mPressure = std::make_unique<Grid2D>(width, height);
+    mDivergence = std::make_unique<Grid2D>(width, height);
     mPreviousDensity = std::make_unique<Grid2D>(width, height);
     mPreviousVelocityX = std::make_unique<Grid2D>(width, height);
     mPreviousVelocityY = std::make_unique<Grid2D>(width, height);
@@ -36,10 +38,10 @@ void Solver::step(float dt, float viscosity) {
 
 void Solver::addTouchForce(int x, int y, float radius, float strength) {
     // Add force to velocity grid at touch position
-    int centerX = x * mWidth;
-    int centerY = y * mHeight;
+    int centerX = x;
+    int centerY = y;
 
-    int radiusInt = radius * std::min(mWidth, mHeight);
+    int radiusInt = std::max(1, static_cast<int>(radius));
 
     for (int dy = -radiusInt; dy <= radiusInt; dy++) {
         for (int dx = -radiusInt; dx <= radiusInt; dx++) {
@@ -66,10 +68,6 @@ void Solver::backupState() {
 }
 
 void Solver::diffuse(float dt, float viscosity, int iterations) {
-    // Calculate diffusion coefficient: a = dt * viscosity * (width * height)^2
-    // The spatial factor comes from the discretization: d^2/dx^2 ~ 1/dx^2 where dx = 1/width
-    float a = dt * viscosity * (mWidth - 2) * (mHeight - 2);
-
     // Diffuse density using Gauss-Seidel relaxation
     solveDensity(dt, viscosity, iterations);
 
@@ -208,43 +206,34 @@ void Solver::advect(float dt) {
 
 void Solver::project() {
     // Solve Poisson equation for pressure to make velocity field divergence-free
-    float* divergence = mPressure->getData();
+    float* divergence = mDivergence->getData();
     float* pressure = mPressure->getData();
 
-    float halfWidth = (mWidth - 2) * 0.5f;
-    float halfHeight = (mHeight - 2) * 0.5f;
+    // Zero out pressure before solve
+    std::fill(pressure, pressure + mWidth * mHeight, 0.0f);
+
+    float gridScale = static_cast<float>(std::max(mWidth, mHeight) - 2);
 
     // Calculate divergence
     for (int y = 1; y < mHeight - 1; y++) {
         for (int x = 1; x < mWidth - 1; x++) {
             int idx = x + y * mWidth;
 
-            float vx = mVelocityX->at(x, y);
-            float vy = mVelocityY->at(x, y);
-
-            float vx_left = mVelocityX->at(x - 1, y);
-            float vx_right = mVelocityX->at(x + 1, y);
-            float vy_bottom = mVelocityY->at(x, y - 1);
-            float vy_top = mVelocityY->at(x, y + 1);
-
-            divergence[idx] = -0.5f * halfWidth * (
-                vx - vx_left +
-                vx - vx_right +
-                vy - vy_bottom +
-                vy - vy_top
+            divergence[idx] = -0.5f * (
+                (mVelocityX->at(x + 1, y) - mVelocityX->at(x - 1, y)) / gridScale +
+                (mVelocityY->at(x, y + 1) - mVelocityY->at(x, y - 1)) / gridScale
             );
         }
     }
 
     // Solve Poisson equation using Gauss-Seidel
-    float* p = mPressure->getData();
     float denom = 1.0f / (4.0f);
 
     for (int iter = 0; iter < 20; iter++) {
         for (int y = 1; y < mHeight - 1; y++) {
             for (int x = 1; x < mWidth - 1; x++) {
                 int idx = x + y * mWidth;
-                p[idx] = (divergence[idx] + p[idx - 1] + p[idx + 1] + p[idx - mWidth] + p[idx + mWidth]) * denom;
+                pressure[idx] = (divergence[idx] + pressure[idx - 1] + pressure[idx + 1] + pressure[idx - mWidth] + pressure[idx + mWidth]) * denom;
             }
         }
     }
@@ -257,8 +246,8 @@ void Solver::project() {
             float vx = mVelocityX->at(x, y);
             float vy = mVelocityY->at(x, y);
 
-            mVelocityX->at(x, y) = vx - 0.5f * halfWidth * (p[idx + 1] - p[idx - 1]);
-            mVelocityY->at(x, y) = vy - 0.5f * halfHeight * (p[idx + mWidth] - p[idx - mWidth]);
+            mVelocityX->at(x, y) = vx - 0.5f * (pressure[idx + 1] - pressure[idx - 1]) * gridScale;
+            mVelocityY->at(x, y) = vy - 0.5f * (pressure[idx + mWidth] - pressure[idx - mWidth]) * gridScale;
         }
     }
 

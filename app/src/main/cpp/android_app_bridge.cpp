@@ -39,7 +39,7 @@ bool AndroidAppBridge::initialize(ANativeWindow* window, int width, int height) 
         mVulkanContext->initialize(window, width, height);
 
         // Create the simulator
-        mSimulator = new fluidsim::NavierStokesSimulator();
+        mSimulator = std::make_unique<fluidsim::NavierStokesSimulator>();
         mSimulator->initialize(mVulkanContext.get(), width, height);
 
         mInitialized = true;
@@ -57,8 +57,7 @@ bool AndroidAppBridge::initialize(ANativeWindow* window, int width, int height) 
 void AndroidAppBridge::destroy() {
     if (mSimulator) {
         mSimulator->cleanup();
-        delete mSimulator;
-        mSimulator = nullptr;
+        mSimulator.reset();
     }
 
     mVulkanContext.reset();
@@ -106,9 +105,7 @@ void AndroidAppBridge::resume() {
     }
 }
 
-
-// Global instance pointer
-static fluidsim::AndroidAppBridge* gAppBridge = nullptr;
+} // namespace fluidsim
 
 // JNI wrapper functions
 extern "C" {
@@ -169,5 +166,3 @@ extern "C" {
         }
     }
 }
-
-} // namespace fluidsim
