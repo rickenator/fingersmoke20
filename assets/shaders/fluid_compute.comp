@@ -1,0 +1,68 @@
+#version 450
+
+// Compute shader for fluid simulation
+// This is a minimal placeholder - replace with actual Navier-Stokes solver
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Input: density and velocity arrays
+// Output: updated density and velocity
+
+layout(push_constant) uniform PushConstants {
+    vec2 resolution;
+    float deltaT;
+    float viscosity;
+} pushConstants;
+
+// Storage buffers for fluid state
+// Buffer 0: density (previous state)
+// Buffer 1: density (next state)
+// Buffer 2: velocity X
+// Buffer 3: velocity Y
+// Buffer 4: external forces
+
+layout(set = 0, binding = 0) readonly buffer DensityIn {
+    float densityIn[];
+};
+
+layout(set = 0, binding = 1) writeonly buffer DensityOut {
+    float densityOut[];
+};
+
+layout(set = 0, binding = 2) readonly buffer VelX {
+    float velX[];
+};
+
+layout(set = 0, binding = 3) readonly buffer VelY {
+    float velY[];
+};
+
+layout(set = 0, binding = 4) readonly buffer Force {
+    float force[];
+};
+
+// Grid dimensions (passed as push constants or uniforms)
+uniform GridSize {
+    ivec2 gridSize;
+};
+
+// Simple helper to index 2D grid
+int idx(int x, int y) {
+    return y * gridSize.x + x;
+}
+
+void main() {
+    ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
+
+    // Boundary check
+    if (pos.x >= gridSize.x || pos.y >= gridSize.y) {
+        return;
+    }
+
+    int i = idx(pos.x, pos.y);
+
+    // TODO: Implement actual Navier-Stokes solver
+    // For now, this is a placeholder that copies density
+
+    densityOut[i] = densityIn[i];
+}

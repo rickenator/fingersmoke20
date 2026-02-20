@@ -1,0 +1,104 @@
+#version 450
+
+// Project velocity field to be mass-conserving (solve divergence and subtract pressure gradient)
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) uniform readonly image2D uVelocityX;
+layout(binding = 1, rgba32f) uniform readonly image2D uVelocityY;
+layout(binding = 2, rgba32f) uniform writeonly image2D uDivergence;
+layout(binding = 3, rgba32f) uniform writeonly image2D uPressure;
+layout(binding = 4, rgba32f) uniform writeonly image2D uVelocityXOut;
+layout(binding = 5, rgba32f) uniform writeonly image2D uVelocityYOut;
+
+layout(push_constant) uniform Uniforms {
+    float dt;
+    float viscosity;
+    float resolutionX;
+    float resolutionY;
+    float iterations;
+} u;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+
+    // Calculate divergence at this point
+    float div = 0.0;
+    vec2 velocity = vec2(0.0);
+
+    // Sample neighboring points
+    for (int i = -1; i <= 1; i++) {
+        for (int j = -1; j <= 1; j++) {
+            ivec2 neighbor = texel + ivec2(i, j);
+            vec2 v = vec2(
+                imageLoad(uVelocityX, neighbor).x,
+                imageLoad(uVelocityY, neighbor).x
+            );
+            div += v.x * i - v.y * j;
+        }
+    }
+
+    div = div / 4.0;
+    imageStore(uDivergence, texel, vec4(div, 0.0, 0.0, 1.0));
+    imageStore(uPressure, texel, vec4(0.0, 0.0, 0.0, 1.0));
+}
+
+// Second pass: solve Poisson equation for pressure using Jacobi iteration
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(binding = 0, rgba32f) uniform readonly image2D uDivergence;
+layout(binding = 1, rgba32f) uniform readonly image2D uPressure;
+layout(binding = 2, rgba32f) uniform writeonly image2D uPressureOut;
+layout(binding = 3, rgba32f) uniform writeonly image2D uVelocityXOut;
+layout(binding = 4, rgba32f) uniform writeonly image2D uVelocityYOut;
+
+layout(push_constant) uniform Uniforms {
+    float dt;
+    float viscosity;
+    float resolutionX;
+    float resolutionY;
+    float iterations;
+} u;
+
+void solvePressureJacobi(readonly image2D divergence, writeonly image2D pressure,
+                        writeonly image2D velocityXOut, writeonly image2D velocityYOut,
+                        float iterations) {
+    for (float iter = 0.0; iter < iterations; iter++) {
+        for (int y = 1; y < int(u.resolutionY) - 1; y++) {
+            for (int x = 1; x < int(u.resolutionX) - 1; x++) {
+                ivec2 texel = ivec2(x, y);
+
+                // Calculate average of neighboring pressure values
+                float p = 0.25 * (
+                    imageLoad(pressure, texel + ivec2(1, 0)).x +
+                    imageLoad(pressure, texel + ivec2(-1, 0)).x +
+                    imageLoad(pressure, texel + ivec2(0, 1)).x +
+                    imageLoad(pressure, texel + ivec2(0, -1)).x -
+                    imageLoad(divergence, texel).x
+                );
+
+                imageStore(pressure, texel, vec4(p, 0.0, 0.0, 1.0));
+            }
+        }
+    }
+
+    // Subtract gradient of pressure from velocity
+    for (int y = 1; y < int(u.resolutionY) - 1; y++) {
+        for (int x = 1; x < int(u.resolutionX) - 1; x++) {
+            ivec2 texel = ivec2(x, y);
+
+            vec2 velocity = vec2(
+                imageLoad(velocityXOut, texel).x,
+                imageLoad(velocityYOut, texel).x
+            );
+
+            float p = imageLoad(pressure, texel).x;
+
+            // Subtract pressure gradient
+            velocity.x -= 0.5 * (imageLoad(pressure, texel + ivec2(1, 0)).x - p);
+            velocity.y -= 0.5 * (imageLoad(pressure, texel + ivec2(0, 1)).x - p);
+
+            imageStore(velocityXOut, texel, vec4(velocity.x, 0.0, 0.0, 1.0));
+            imageStore(velocityYOut, texel, vec4(velocity.y, 0.0, 0.0, 1.0));
+        }
+    }
+}

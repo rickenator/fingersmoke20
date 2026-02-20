@@ -1,0 +1,61 @@
+#version 450 core
+#extension GL_ARB_shader_storage_buffer_object : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(std430, binding = 0) readonly buffer VXBuffer {
+    float vx[];
+};
+
+layout(std430, binding = 1) readonly buffer VYBuffer {
+    float vy[];
+};
+
+layout(std430, binding = 2) writeonly buffer DivBuffer {
+    float divergence[];
+};
+
+layout(std430, binding = 3) writeonly buffer PresBuffer {
+    float pressure[];
+};
+
+layout(std430, binding = 4) writeonly buffer VXOutBuffer {
+    float vxOut[];
+};
+
+layout(std430, binding = 5) writeonly buffer VYOutBuffer {
+    float vyOut[];
+};
+
+uniform int width;
+uniform int height;
+uniform float halfWidth;
+uniform float halfHeight;
+
+void main() {
+    int x = int(gl_GlobalInvocationID.x);
+    int y = int(gl_GlobalInvocationID.y);
+
+    if (x > 0 && x < width - 1 && y > 0 && y < height - 1) {
+        int idx = x + y * width;
+
+        // Calculate divergence
+        float vx = vx[idx];
+        float vy = vy[idx];
+
+        float vx_left = vx[idx - 1];
+        float vx_right = vx[idx + 1];
+        float vy_bottom = vy[idx - width];
+        float vy_top = vy[idx + width];
+
+        divergence[idx] = -0.5f * halfWidth * (
+            vx - vx_left +
+            vx - vx_right +
+            vy - vy_bottom +
+            vy - vy_top
+        );
+
+        // Initialize pressure
+        pressure[idx] = 0.0f;
+    }
+}

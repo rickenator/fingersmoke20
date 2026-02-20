@@ -1,56 +1,74 @@
-# Sets the minimum CMake version required for this project.
-cmake_minimum_required(VERSION 3.4.1)
+cmake_minimum_required(VERSION 3.22.1)
 
-# Declares the project name. The project name can be accessed via ${ PROJECT_NAME},
-project("fingersmoke20")
+project("fluidsim")
 
+# Find Vulkan SDK
 find_package(Vulkan REQUIRED)
 
-add_library(${CMAKE_PROJECT_NAME} SHARED fs20.cpp)
+# Add source files
+set(SOURCES
+    android_app_bridge.cpp
+    vulkan/VulkanInstance.cpp
+    vulkan/VulkanSurface.cpp
+    vulkan/VulkanDevice.cpp
+    vulkan/VulkanSwapchain.cpp
+    vulkan/VulkanCommand.cpp
+    vulkan/VulkanCore.cpp
+    vulkan/VulkanContext.cpp
+    vulkan/VulkanComputePipeline.cpp
+    vulkan/VulkanBuffer.cpp
+    vulkan/VulkanMemory.cpp
+    fluid/NavierStokesSimulator.cpp
+    fluid/Grid2D.cpp
+    fluid/Solver.cpp
+    fluid/GPUFluidSolver.cpp
+)
 
-find_library(log-lib log)
+# Create shared library
+add_library(fluidsim SHARED ${SOURCES})
 
-find_program(GLSLANG_VALIDATOR NAMES glslangValidator)
+# Include directories
+target_include_directories(fluidsim PRIVATE
+    vulkan
+    fluid
+    ${CMAKE_CURRENT_SOURCE_DIR}/../cpp-utils
+)
 
-if(GLSLANG_VALIDATOR)
-    set(SHADER_SOURCES
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/compute_shader.glsl"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/vertex_shader.glsl"
-            "${CMAKE_CURRENT_SOURCE_DIR}/shaders/fragment_shader.glsl"
-    )
+# Link libraries
+target_link_libraries(fluidsim
+    Vulkan::Vulkan
+    log
+)
 
-    set(SHADER_OUTPUTS)
-    foreach(SHADER_SOURCE IN LISTS SHADER_SOURCES)
-        get_filename_component(SHADER_NAME ${SHADER_SOURCE} NAME_WE)
-        set(SPIRV_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/${SHADER_NAME}.spv")
+# Compile shaders if glslc is available
+find_program(GLSLC glslc)
+set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders)
+
+# List of shader files to compile
+set(SHADER_FILES
+    ${SHADER_DIR}/fluid_addforce.comp
+    ${SHADER_DIR}/fluid_diffuse.comp
+    ${SHADER_DIR}/fluid_advect.comp
+    ${SHADER_DIR}/fluid_project.comp
+)
+
+if(GLSLC)
+    # Create a custom target to compile all shaders
+    set(SPIRV_OUTPUTS)
+    foreach(SHADER_FILE ${SHADER_FILES})
+        get_filename_component(SHADER_NAME ${SHADER_FILE} NAME_WE)
+        set(SPIRV_FILE ${SHADER_DIR}/${SHADER_NAME}.spv)
+
         add_custom_command(
-                OUTPUT ${SPIRV_OUTPUT}
-                COMMAND ${GLSLANG_VALIDATOR} -V ${SHADER_SOURCE} -o ${SPIRV_OUTPUT}
-                DEPENDS ${SHADER_SOURCE}
-                COMMENT "Compiling ${SHADER_SOURCE}"
+            OUTPUT ${SPIRV_FILE}
+            COMMAND ${GLSLC} ${SHADER_FILE} -o ${SPIRV_FILE}
+            DEPENDS ${SHADER_FILE}
+            COMMENT "Compiling GLSL compute shader ${SHADER_NAME} to SPIR-V"
         )
-        list(APPEND SHADER_OUTPUTS ${SPIRV_OUTPUT})
+
+        list(APPEND SPIRV_OUTPUTS ${SPIRV_FILE})
     endforeach()
 
-    add_custom_target(CompileAllShaders ALL DEPENDS ${SHADER_OUTPUTS})
-else()
-    message(WARNING "glslangValidator not found; shader compilation will be skipped.")
+    add_custom_target(fluid_shaders DEPENDS ${SPIRV_OUTPUTS})
+    add_dependencies(fluidsim fluid_shaders)
 endif()
-
-if(TARGET CompileAllShaders)
-    add_dependencies(${CMAKE_PROJECT_NAME} CompileAllShaders)
-endif()
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++17 -frtti -fexceptions")
-set(CMAKE_BUILD_TYPE "Debug")
-set(ANDROID_ABI "x86;x86_64;armeabi-v7a;arm64-v8a")
-
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-
-target_link_libraries(
-        ${CMAKE_PROJECT_NAME}
-        Vulkan::Vulkan
-        android
-        log
-        vulkan
-)
