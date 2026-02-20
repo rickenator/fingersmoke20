@@ -88,6 +88,36 @@ private:
     // Vulkan context and resources
     VulkanContext* mContext = nullptr;
 
+    // Compute pipelines for fluid simulation
+    std::unique_ptr<VulkanComputePipeline> mAddForcePipeline;
+    std::unique_ptr<VulkanComputePipeline> mDiffusePipeline;
+    std::unique_ptr<VulkanComputePipeline> mAdvectPipeline;
+    std::unique_ptr<VulkanComputePipeline> mProjectPipeline;
+
+    // Descriptor sets for compute shaders
+    VkDescriptorSet mDensityDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet mVelocityXDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet mVelocityYDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorPool mDescriptorPool = VK_NULL_HANDLE;
+
+    // Shared descriptor set layout for all pipelines
+    VkDescriptorSetLayout mDescriptorSetLayout = VK_NULL_HANDLE;
+
+    // Bind descriptor set to pipeline
+    void bindDescriptorSet(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, VkDescriptorSet descriptorSet);
+
+    // Initialize compute pipelines
+    bool initializePipelines();
+
+    // Create descriptor sets and bind buffers
+    bool createDescriptorSets();
+
+    // Create shared descriptor set layout for all pipelines
+    bool createDescriptorSetLayout();
+
+    // Bind buffers to descriptor sets
+    void bindBuffersToDescriptorSets();
+
     // GPU buffers
     std::unique_ptr<VulkanBuffer> mDensityBuffer;
     std::unique_ptr<VulkanBuffer> mVelocityXBuffer;

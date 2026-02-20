@@ -1,6 +1,7 @@
 #include "VulkanCommand.h"
 #include <iostream>
 #include <vector>
+#include <vulkan/vulkan.h>
 
 namespace fluidsim {
 
@@ -142,6 +143,19 @@ VkQueue VulkanCommand::getQueue(VkDevice device) const {
         vkGetDeviceQueue(device, mQueueFamilyIndex, 0, &mQueue);
     }
     return mQueue;
+}
+
+void VulkanCommand::dispatch(VkPipelineLayout pipelineLayout, VkPipeline pipeline, uint32_t x, uint32_t y, uint32_t z) {
+    if (mCommandBuffers.empty() || mCommandBuffers[0] == VK_NULL_HANDLE) {
+        std::cerr << "No command buffer available for dispatch" << std::endl;
+        return;
+    }
+
+    VkCommandBuffer commandBuffer = mCommandBuffers[0];
+
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &mDescriptorSet, 0, nullptr);
+    vkCmdDispatch(commandBuffer, x, y, z);
 }
 
 } // namespace fluidsim

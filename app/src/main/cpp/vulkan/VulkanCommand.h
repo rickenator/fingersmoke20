@@ -23,6 +23,9 @@ public:
 
     bool submitWork(VkQueue queue, VkCommandBuffer commandBuffer, VkFence fence = VK_NULL_HANDLE);
 
+    // Dispatch compute shader work
+    void dispatch(VkPipelineLayout pipelineLayout, VkPipeline pipeline, uint32_t x, uint32_t y, uint32_t z);
+
     VkCommandPool getCommandPool() const { return mCommandPool; }
     const std::vector<VkCommandBuffer>& getCommandBuffers() const { return mCommandBuffers; }
     VkCommandBuffer getPrimaryCommandBuffer() const { return mCommandBuffers.empty() ? VK_NULL_HANDLE : mCommandBuffers[0]; }
@@ -32,6 +35,7 @@ private:
     VkCommandPool mCommandPool = VK_NULL_HANDLE;
     std::vector<VkCommandBuffer> mCommandBuffers;
     uint32_t mQueueFamilyIndex = 0;
+    VkDescriptorSet mDescriptorSet = VK_NULL_HANDLE;
     mutable VkQueue mQueue = VK_NULL_HANDLE;
 };
 

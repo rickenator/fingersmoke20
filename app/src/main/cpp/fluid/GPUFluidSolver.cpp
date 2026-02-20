@@ -221,7 +221,258 @@ bool GPUFluidSolver::initialize(VulkanContext* context) {
     // Initialize buffers with current data
     uploadData();
 
+    // Initialize compute pipelines
+    if (!initializePipelines()) {
+        std::cerr << "Failed to initialize compute pipelines" << std::endl;
+        return false;
+    }
+
+    // Create descriptor sets and bind buffers
+    if (!createDescriptorSets()) {
+        std::cerr << "Failed to create descriptor sets" << std::endl;
+        return false;
+    }
+
+    // Bind buffers to descriptor sets
+    bindBuffersToDescriptorSets();
+
     return true;
+}
+
+bool GPUFluidSolver::initializePipelines() {
+    if (!mContext) {
+        return false;
+    }
+
+    // Create shared descriptor set layout for all pipelines
+    if (!createDescriptorSetLayout()) {
+        return false;
+    }
+
+    // Get device and physical device
+    VkDevice device = mContext->getVulkanCore()->getDevice();
+    VkPhysicalDevice physicalDevice = mContext->getVulkanCore()->getPhysicalDevice();
+
+    // Get shader directory path
+    std::string assetDir = "shaders/fluid";
+
+    // Initialize compute pipelines
+    mAddForcePipeline = std::make_unique<VulkanComputePipeline>();
+    if (!mAddForcePipeline->create(mContext, assetDir + "/fluid_addforce.comp")) {
+        std::cerr << "Failed to create addforce pipeline" << std::endl;
+        return false;
+    }
+
+    mDiffusePipeline = std::make_unique<VulkanComputePipeline>();
+    if (!mDiffusePipeline->create(mContext, assetDir + "/fluid_diffuse.comp", mDescriptorSetLayout)) {
+        std::cerr << "Failed to create diffuse pipeline" << std::endl;
+        return false;
+    }
+
+    mAdvectPipeline = std::make_unique<VulkanComputePipeline>();
+    if (!mAdvectPipeline->create(mContext, assetDir + "/fluid_advect.comp", mDescriptorSetLayout)) {
+        std::cerr << "Failed to create advect pipeline" << std::endl;
+        return false;
+    }
+
+    mProjectPipeline = std::make_unique<VulkanComputePipeline>();
+    if (!mProjectPipeline->create(mContext, assetDir + "/fluid_project.comp", mDescriptorSetLayout)) {
+        std::cerr << "Failed to create project pipeline" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool GPUFluidSolver::createDescriptorSetLayout() {
+    if (!mContext) {
+        return false;
+    }
+
+    // Create descriptor set layout for compute shaders with 6 bindings
+    std::array<VkDescriptorSetLayoutBinding, 6> bindings = {};
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[0].pImmutableSamplers = nullptr;
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[1].pImmutableSamplers = nullptr;
+
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[2].pImmutableSamplers = nullptr;
+
+    bindings[3].binding = 3;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[3].descriptorCount = 1;
+    bindings[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[3].pImmutableSamplers = nullptr;
+
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[4].descriptorCount = 1;
+    bindings[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[4].pImmutableSamplers = nullptr;
+
+    bindings[5].binding = 5;
+    bindings[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[5].descriptorCount = 1;
+    bindings[5].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    bindings[5].pImmutableSamplers = nullptr;
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo = {};
+    layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
+    layoutInfo.pBindings = bindings.data();
+
+    VkDevice device = mContext->getVulkanCore()->getDevice();
+    if (vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &mDescriptorSetLayout) != VK_SUCCESS) {
+        std::cerr << "Failed to create descriptor set layout" << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool GPUFluidSolver::createDescriptorSets() {
+    if (!mContext) {
+        return false;
+    }
+
+    VkDevice device = mContext->getVulkanCore()->getDevice();
+    VkPhysicalDevice physicalDevice = mContext->getVulkanCore()->getPhysicalDevice();
+
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSizes[] = {
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6},  // 6 storage buffers
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}   // 1 uniform buffer
+    };
+
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 2;
+    poolInfo.pPoolSizes = poolSizes;
+    poolInfo.maxSets = 1;
+
+    if (vkCreateDescriptorPool(device, &poolInfo, nullptr, &mDescriptorPool) != VK_SUCCESS) {
+        std::cerr << "Failed to create descriptor pool" << std::endl;
+        return false;
+    }
+
+    // Create descriptor set (single set for all buffers)
+    VkDescriptorSetLayout descriptorSetLayout = mDescriptorSetLayout;
+    VkDescriptorSetAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo.descriptorPool = mDescriptorPool;
+    allocInfo.descriptorSetCount = 1;
+    allocInfo.pSetLayouts = &descriptorSetLayout;
+
+    if (vkAllocateDescriptorSets(device, &allocInfo, &mDensityDescriptorSet) != VK_SUCCESS) {
+        std::cerr << "Failed to allocate descriptor set" << std::endl;
+        return false;
+    }
+
+    mVelocityXDescriptorSet = mDensityDescriptorSet;
+    mVelocityYDescriptorSet = mDensityDescriptorSet;
+
+    return true;
+}
+
+void GPUFluidSolver::bindBuffersToDescriptorSets() {
+    VkDevice device = mContext->getVulkanCore()->getDevice();
+
+    // Create descriptor buffer info for all buffers
+    VkDescriptorBufferInfo densityBufferInfo = {};
+    densityBufferInfo.buffer = mDensityBuffer->getBuffer();
+    densityBufferInfo.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo velocityXBufferInfo = {};
+    velocityXBufferInfo.buffer = mVelocityXBuffer->getBuffer();
+    velocityXBufferInfo.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo velocityYBufferInfo = {};
+    velocityYBufferInfo.buffer = mVelocityYBuffer->getBuffer();
+    velocityYBufferInfo.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo prevDensityBufferInfo = {};
+    prevDensityBufferInfo.buffer = mPreviousDensityBuffer->getBuffer();
+    prevDensityBufferInfo.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo prevVelocityXBufferInfo = {};
+    prevVelocityXBufferInfo.buffer = mPreviousVelocityXBuffer->getBuffer();
+    prevVelocityXBufferInfo.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo prevVelocityYBufferInfo = {};
+    prevVelocityYBufferInfo.buffer = mPreviousVelocityYBuffer->getBuffer();
+    prevVelocityYBufferInfo.range = VK_WHOLE_SIZE;
+
+    VkDescriptorBufferInfo uniformBufferInfo = {};
+    uniformBufferInfo.buffer = mUniformBuffer->getBuffer();
+    uniformBufferInfo.range = VK_WHOLE_SIZE;
+
+    // Prepare write descriptors
+    std::array<VkWriteDescriptorSet, 6> writes = {};
+
+    // Binding 0: Density buffer
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = mDensityDescriptorSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].pBufferInfo = &densityBufferInfo;
+
+    // Binding 1: Velocity X buffer
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = mDensityDescriptorSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[1].pBufferInfo = &velocityXBufferInfo;
+
+    // Binding 2: Velocity Y buffer
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = mDensityDescriptorSet;
+    writes[2].dstBinding = 2;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &velocityYBufferInfo;
+
+    // Binding 3: Previous density buffer
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = mDensityDescriptorSet;
+    writes[3].dstBinding = 3;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[3].pBufferInfo = &prevDensityBufferInfo;
+
+    // Binding 4: Previous velocity X buffer
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = mDensityDescriptorSet;
+    writes[4].dstBinding = 4;
+    writes[4].descriptorCount = 1;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[4].pBufferInfo = &prevVelocityXBufferInfo;
+
+    // Binding 5: Uniform buffer
+    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[5].dstSet = mDensityDescriptorSet;
+    writes[5].dstBinding = 5;
+    writes[5].descriptorCount = 1;
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[5].pBufferInfo = &uniformBufferInfo;
+
+    vkUpdateDescriptorSets(device, 6, writes.data(), 0, nullptr);
+}
+
+void GPUFluidSolver::bindDescriptorSet(VkCommandBuffer commandBuffer, VkPipelineLayout pipelineLayout, VkDescriptorSet descriptorSet) {
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
 }
 
 GPUFluidSolver::~GPUFluidSolver() {
@@ -304,7 +555,7 @@ void GPUFluidSolver::downloadData() {
 void GPUFluidSolver::step(float dt, float viscosity) {
     if (!mContext) {
         // Fallback to CPU if no Vulkan context available
-        Solver solver(mWidth, mHeight);
+        GPULikeFluidSolver solver(mWidth, mHeight);
         solver.diffuse(0, *mDensity, *mPreviousDensity, viscosity, dt);
         solver.diffuse(1, *mVelocityX, *mPreviousVelocityX, viscosity, dt);
         solver.diffuse(2, *mVelocityY, *mPreviousVelocityY, viscosity, dt);
@@ -322,17 +573,47 @@ void GPUFluidSolver::step(float dt, float viscosity) {
     backupState();
     uploadData();
 
-    // In a full implementation, this would:
-    // 1. Create and compile Vulkan compute shaders
-    // 2. Set up uniform buffers with simulation parameters
-    // 3. Dispatch compute workgroups for each step:
-    //    - Diffuse: solve diffusion equation
-    //    - Advect: backtrace and interpolate
-    //    - Project: solve Poisson equation for pressure
-    // 4. Apply boundary conditions
-    // 5. Synchronize and download results
+    // Upload simulation parameters to uniform buffer
+    struct UniformData {
+        float deltaTime;
+        float viscosity;
+        float resolutionX;
+        float resolutionY;
+    };
+    UniformData uniformData{dt, viscosity, static_cast<float>(mWidth), static_cast<float>(mHeight)};
+    mUniformBuffer->copyFrom(&uniformData, sizeof(uniformData));
 
-    // For now, download and return
+    // Set up command buffer for compute operations
+    if (!mContext->getCommandComponent()->beginSingleTimeCommands(mContext->getVulkanCore()->getDevice())) {
+        std::cerr << "Failed to begin single time commands for fluid simulation" << std::endl;
+        downloadData();
+        return;
+    }
+
+    VkDevice device = mContext->getVulkanCore()->getDevice();
+    VkQueue queue = mContext->getCommandComponent()->getQueue(device);
+    VkCommandBuffer commandBuffer = mContext->getCommandComponent()->getPrimaryCommandBuffer();
+
+    // Diffuse step (bind density descriptor set)
+    mDiffusePipeline->bindPipeline(commandBuffer);
+    bindDescriptorSet(commandBuffer, mDiffusePipeline->getPipelineLayout(), mDensityDescriptorSet);
+    mDiffusePipeline->dispatch(commandBuffer, mWidth, mHeight, 1);
+
+    // Advect step (bind density descriptor set)
+    mAdvectPipeline->bindPipeline(commandBuffer);
+    bindDescriptorSet(commandBuffer, mAdvectPipeline->getPipelineLayout(), mDensityDescriptorSet);
+    mAdvectPipeline->dispatch(commandBuffer, mWidth, mHeight, 1);
+
+    // Project step (bind velocity descriptor sets)
+    mProjectPipeline->bindPipeline(commandBuffer);
+    bindDescriptorSet(commandBuffer, mProjectPipeline->getPipelineLayout(), mVelocityXDescriptorSet);
+    bindDescriptorSet(commandBuffer, mProjectPipeline->getPipelineLayout(), mVelocityYDescriptorSet);
+    mProjectPipeline->dispatch(commandBuffer, mWidth, mHeight, 1);
+
+    // End and submit commands
+    mContext->getCommandComponent()->endSingleTimeCommands(device, queue);
+
+    // Synchronize and download results
     downloadData();
 }
 
@@ -359,11 +640,42 @@ void GPUFluidSolver::addTouchForce(int x, int y, float radius, float strength) {
 
     uploadData();
 
-    // In full implementation, this would:
-    // 1. Dispatch compute shader to add force at specified location
-    // 2. Use radial falloff for smooth force distribution
-    // 3. Download results
+    // Dispatch compute shader to add force at specified location
+    VkDevice device = mContext->getVulkanCore()->getDevice();
+    VkQueue queue = mContext->getCommandComponent()->getQueue(device);
+    VkCommandBuffer commandBuffer = mContext->getCommandComponent()->getPrimaryCommandBuffer();
 
+    // Set up uniform buffer for force parameters
+    struct ForceUniformData {
+        float x;
+        float y;
+        float radius;
+        float strength;
+    };
+    ForceUniformData forceData{static_cast<float>(x), static_cast<float>(y), radius, strength};
+    mUniformBuffer->copyFrom(&forceData, sizeof(forceData));
+
+    // Dispatch compute shader for addforce
+    if (!mContext->getCommandComponent()->beginSingleTimeCommands(device)) {
+        std::cerr << "Failed to begin single time commands for force application" << std::endl;
+        downloadData();
+        return;
+    }
+
+    // Use addforce pipeline if available, otherwise skip
+    if (mAddForcePipeline) {
+        mAddForcePipeline->bindPipeline(commandBuffer);
+        bindDescriptorSet(commandBuffer, mAddForcePipeline->getPipelineLayout(), mDensityDescriptorSet);
+        mAddForcePipeline->dispatch(commandBuffer, mWidth, mHeight, 1);
+    } else {
+        // If addforce pipeline not created, skip GPU force addition
+        // Force will be applied during next step if data is modified on CPU
+        std::cerr << "Warning: addforce pipeline not created, skipping GPU force application" << std::endl;
+    }
+
+    mContext->getCommandComponent()->endSingleTimeCommands(device, queue);
+
+    // Download results
     downloadData();
 }
 

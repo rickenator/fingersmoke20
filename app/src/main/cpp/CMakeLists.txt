@@ -42,11 +42,12 @@ target_link_libraries(fluidsim
 
 # Compile shaders if glslc is available
 find_program(GLSLC glslc)
-set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../assets/shaders)
+set(SHADER_DIR ${CMAKE_CURRENT_SOURCE_DIR}/assets/shaders)
 
 # List of shader files to compile
 set(SHADER_FILES
     ${SHADER_DIR}/fluid_addforce.comp
+    ${SHADER_DIR}/fluid_diffuse.comp
     ${SHADER_DIR}/fluid_advect.comp
     ${SHADER_DIR}/fluid_project.comp
 )
